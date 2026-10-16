@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="../css/dashb_agent.css">
+  <title>Tableau de Bord - Rapports d'Activités</title>
+
+</head>
+<body>
+
+  <!-- BARRE DE NAVIGATION -->
+  <!-- BARRE DE NAVIGATION -->
+<nav class="navbar">
+  <a href="#" class="brand">
+    <div class="brand-logo">
+      <img src="ddtr.jpeg" alt="logo" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+    </div>
+        <span id="titre"></span>
+    <!-- Ajout du nom de l'utilisateur avant le titre -->
+    <span id="navUserPrefix" style="font-weight: 700; margin-right: 6px; color: var(--primary, #007bff);">
+      <!-- Injecté par JavaScript -->
+    </span>
+    
+
+  </a>
+
+  <div class="nav-actions">
+    <button class="theme-toggle" id="themeToggle" title="Changer le thème">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="12" cy="12" r="5"></circle>
+        <line x1="12" y1="1" x2="12" y2="3"></line>
+        <line x1="12" y1="21" x2="12" y2="23"></line>
+      </svg>
+    </button>
+
+    <a id="linkprofile" href="profile.html" class="user-profile-link">
+      <img id="navAvatar" class="user-avatar" src="https://api.dicebear.com/7.x/bottts/svg?seed=Agent" alt="Avatar">
+      <span id="navName" style="font-size: 0.85rem; font-weight: 600;">Agent</span>
+    </a>
+  </div>
+</nav>
+
+  <!-- CONTENU TABLEAU DE BORD -->
+  <main class="container">
+    <div class="dashboard-header">
+      <div>
+        <h1 style="font-size: 1.5rem; font-weight: 800;">Tableau de Bord</h1>
+        <p style="color: var(--text-muted); font-size: 0.9rem;">Suivi quotidien, hebdomadaire et mensuel des activités.</p>
+      </div>
+
+      <div style="display: flex; gap: 12px; flex-wrap: wrap;">
+       
+
+        <!-- Filtres Temporels
+        <div class="filter-tabs">
+          <button class="tab-btn active" onclick="setPeriod('journalier', this)">Jour</button>
+          <button class="tab-btn" onclick="setPeriod('hebdo', this)">Semaine</button>
+          <button class="tab-btn" onclick="setPeriod('mensuel', this)">Mois</button>
+          <button class="tab-btn" onclick="setPeriod('annuel', this)">Année</button>
+        </div> -->
+      </div>
+    </div>
+
+    <!-- CARTE DE STATISTIQUES -->
+    <div class="stats-grid">
+  <!-- Carte 1 : Heures Travaillées -->
+  <div class="stat-card">
+    <div class="stat-title">Heures Travaillées</div>
+    <div class="stat-value" id="statHours">0 hrs</div>
+    <div class="stat-desc">
+      <span id="statHourtext">↑ +0%</span> cette période
+    </div>
+  </div>
+
+  <!-- Carte 2 : Tâches Terminées -->
+  <div class="stat-card">
+    <div class="stat-title">Tâches Terminées</div>
+    <div class="stat-value" id="statTasks">0</div>
+    <div class="stat-desc">
+      <span id="statTasktext" style="color: var(--primary)">0%</span>
+      <span style="color: var(--primary)">de complétion</span>
+    </div>
+  </div>
+
+  <!-- Carte 3 : Propositions soumises -->
+  <div class="stat-card">
+    <div class="stat-title">Propositions soumises</div>
+    <div class="stat-value" id="statIssues">0</div>
+    <div class="stat-desc">
+      <span id="statIssueHelp" style="color: var(--text-muted)">Depuis la création de votre compte</span>
+    </div>
+  </div>
+</div>
+    <!-- GRIDE PRINCIPALE -->
+    <div class="main-grid">
+      <!-- VUE SAISIE DU RAPPORT DU JOUR -->
+      <div>
+        <div class="card">
+          <div class="card-title entry-card-title">
+            <span>Enregistrement des activités</span>
+            <span style="font-size: 0.8rem; color: var(--text-muted);" id="currentDateDisplay">30/09/2026</span>
+          </div>
+
+<form id="reportForm">
+  <div style="margin-bottom: 16px;">
+    <label for="reportReviewer" style="font-size: 0.85rem; font-weight: 600; margin-bottom: 6px; display: block;">Chef de service destinataire de la soumission :</label>
+    <select id="reportReviewer" class="input-control" required>
+      <option value="">Chargement des chefs de service…</option>
+    </select>
+    <small id="reportReviewerHelp" style="display:block;margin-top:6px;color:var(--text-muted);">Sélectionnez un chef de service actif de votre département.</small>
+  </div>
+  <div id="tasksContainer">
+    <label style="font-size: 0.85rem; font-weight: 600; margin-bottom: 8px; display: block;">
+      Activités réalisées :
+    </label>
+    
+    <!-- Ligne d'activité par défaut (SANS id="tasksContainer" sur le div enfant) -->
+    <div class="task-row">
+      <input type="text" class="input-control task-desc" placeholder="Description de l'activité..." required>
+      <select class="input-control task-category">
+        <option value="Développement">Développement</option>
+        <option value="Support & Assistance">Support & Assistance</option>
+        <option value="Réunion & Coordination">Réunion & Coordination</option>
+        <option value="Documentation">Documentation</option>
+      </select>
+      <input type="number" step="0.5" class="input-control task-hours" placeholder="Hrs" value="2" required>
+      <button type="button" class="btn btn-danger" onclick="removeTaskRow(this)">✕</button>
+    </div>
+  </div>
+
+  <button type="button" class="btn" style="border: 1px dashed var(--border-color); margin-bottom: 16px; width: 100%; justify-content: center;" onclick="addTaskRow()">
+    + Ajouter une ligne d'activité
+  </button>
+
+  <div style="margin-bottom: 16px;">
+    <label style="font-size: 0.85rem; font-weight: 600; margin-bottom: 6px; display: block;">
+      Commentaire général ou objectifs pour la prochaine journée (optionnel) :
+    </label>
+    <textarea id="com" class="input-control" style="min-height: 60px;" placeholder="Commentaire général ou objectifs pour la prochaine journée..."></textarea>
+  </div>
+
+  <button type="submit" class="btn btn-primary" style="width: 100%; justify-content: center;">
+    Soumettre le rapport journalier
+  </button>
+</form>
+        </div>
+
+        <div class="card">
+          <div class="card-title entry-card-title">Soumission d’une proposition</div>
+          <p style="color:var(--text-muted);font-size:0.85rem;margin-top:0;">Choisissez l’activité concernée parmi celles que vous avez enregistrées.</p>
+          <form id="proposalForm">
+            <label for="proposalActivityId" style="font-size:0.85rem;font-weight:600;display:block;margin-bottom:6px;">Activité concernée</label>
+            <select id="proposalActivityId" class="input-control" required>
+              <option value="">Chargement de vos activités…</option>
+            </select>
+            <label for="issueDescription" style="font-size:0.85rem;font-weight:600;display:block;margin:12px 0 6px;">Difficulté, besoin ou opportunité</label>
+            <textarea id="issueDescription" class="input-control" style="min-height:60px;margin-bottom:10px;" required placeholder="Décrivez le problème ou le besoin à signaler..."></textarea>
+            <label for="proposedSolution" style="font-size:0.85rem;font-weight:600;display:block;margin-bottom:6px;">Proposition / solution</label>
+            <textarea id="proposedSolution" class="input-control" style="min-height:60px;" placeholder="Quelle solution ou amélioration proposez-vous ?"></textarea>
+            <label style="display:flex;align-items:center;gap:8px;margin-top:10px;font-size:0.85rem;">
+              <input type="checkbox" id="needsManagerHelp"> J’ai besoin de l’aide du chef de service
+            </label>
+            <button type="submit" class="btn btn-primary" style="width:100%;justify-content:center;margin-top:14px;">Soumettre la proposition</button>
+          </form>
+        </div>
+
+        <!-- LISTE DES RAPPORTS DÉJÀ ENREGISTRÉS -->
+        <div class="card">
+          <div class="card-title">Historique des Rapports</div>
+          <div id="reportsList">
+            <!-- Injecté par JavaScript -->
+          </div>
+        </div>
+      </div>
+
+      <!-- SIDEBAR STATS & DEMO -->
+      <div>
+        <div class="card">
+          <div class="card-title">Actions Rapides</div>
+          <button id="statistiques" class="btn btn-primary" style="width: 100%; margin-bottom: 10px; justify-content: center;">
+             RETOUR AUX STATISTIQUES
+          </button>
+          <button class="btn btn-primary" style="width: 100%; margin-bottom: 10px; justify-content: center;" onclick="window.print()">
+            🖨️ Imprimer / Exporter PDF
+          </button>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <div id="toastContainer" class="toast-container"></div>
+
+  <script src="../js/dashb_agent.js"></script>
+</body>
+</html>

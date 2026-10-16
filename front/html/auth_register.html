@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="fr" data-theme="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Création de compte - Rapports d'Activités</title>
+    <link rel="stylesheet" href="../css/style_inscription.css">
+</head>
+<body>
+
+    <!-- Bouton Bascule Thème Sombre / Clair -->
+    <button class="theme-toggle" id="themeToggleBtn" title="Changer de thème">🌙</button>
+
+    <main class="register-card">
+        <div class="header-title">
+            <div class="brand-logo"><img class="ddtr" src="ddtr.jpeg" alt="logo_service" ></div>
+            <h1>Création de compte</h1>
+            <p>Espace Agent & Gestion des Rapports d'Activités</p>
+        </div>
+
+        <form id="registerForm">
+            <div class="form-grid">
+                
+                <!-- 1. Nom complet -->
+                <div class="form-group full-width">
+                    <label for="fullName">Nom complet *</label>
+                    <div class="input-wrapper">
+                        <svg class="input-icon" viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>
+                        <input type="text" id="fullName" placeholder="Ex: Jean Dupont" required>
+                    </div>
+                </div>
+
+                <!-- 2. Adresse Email -->
+                <div class="form-group full-width">
+                    <label for="email">Adresse Email *</label>
+                    <div class="input-wrapper">
+                        <svg class="input-icon" viewBox="0 0 24 24"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"></path><polyline points="22,6 12,13 2,6"></polyline></svg>
+                        <input type="email" id="email" placeholder="jean.dupont@service.com" required>
+                    </div>
+                </div>
+
+                <!-- 3. Nom d'utilisateur -->
+                <div class="form-group full-width">
+                    <label for="username">Nom d'utilisateur *</label>
+                    <div class="input-wrapper">
+                        <svg class="input-icon" viewBox="0 0 24 24"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"></path><line x1="7" y1="7" x2="7.01" y2="7"></line></svg>
+                        <input type="text" id="username" placeholder="jdupont" required>
+                    </div>
+                </div>
+
+                <!-- 4. Téléphone -->
+               <div class="form-group">
+                    <label for="position">Numéro de téléphone</label>
+                    <div class="input-wrapper">
+                        <svg class="input-icon" viewBox="0 0 24 24"><rect x="2" y="7" width="20" height="14" rx="2" ry="2"></rect><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"></path></svg>
+                        <input type="tel" id="phone" placeholder="Ex: 690320717" required>
+                    </div>
+                </div> 
+
+                <!-- 5. Département / Service -->
+                <div class="form-group">
+                    <label for="department">Département *</label>
+                    <div class="input-wrapper">
+                        <svg class="input-icon" viewBox="0 0 24 24"><path d="M3 21h18"></path><path d="M9 8h1"></path><path d="M9 12h1"></path><path d="M9 16h1"></path><path d="M14 8h1"></path><path d="M14 12h1"></path><path d="M14 16h1"></path><path d="M5 21V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16"></path></svg>
+                        <select id="department" required style="padding-left: 2.6rem;">
+                            <option value="" disabled selected>Sélectionner...</option>
+                            <option value="Informatique">Informatique</option>
+                            <option value="TELECOM">TELECOM</option>
+                            <option value="Développement">Développement</option>
+                            <option value="Documentation">Documentation</option>
+                            <option value="LAN">LAN</option>
+                        </select>
+                    </div>
+                </div>
+
+                <!-- Choix du Rôle -->
+                <div class="form-group full-width">
+                    <label>Rôle dans le service *</label>
+                    <div class="role-selector">
+                        <label class="role-card selected" id="roleAgentCard">
+                            <input type="radio" name="role" value="Agent" checked>
+                            👤 Agent
+                        </label>
+                        <label class="role-card" id="roleChefCard">
+                            <input type="radio" name="role" value="manager">
+                            👨‍💼 Chef de Service
+                        </label>
+                    </div>
+                </div>
+
+                <!-- 6. Mot de passe -->
+                <div class="form-group full-width">
+                    <label for="password">Mot de passe *</label>
+                    <div class="input-wrapper">
+                        <svg class="input-icon" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
+                        <input type="password" id="password" minlength="12" placeholder="12 caractères minimum" required>
+                        <button type="button" class="toggle-password-btn" data-target="password" title="Afficher/Masquer">
+                            <!-- SVG Oeil Ouvert -->
+                            <svg class="icon-eye-open" viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
+                            <!-- SVG Oeil Fermé (Caché par défaut) -->
+                            <svg class="icon-eye-closed" viewBox="0 0 24 24" style="display:none;"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path><line x1="1" y1="1" x2="23" y2="23"></line></svg>
+                        </button>
+                    </div>
+                    <div class="validation-hint" id="lengthHint">● Au moins 12 caractères</div>
+                </div>
+
+                <!-- 7. Confirmation mot de passe -->
+                <div class="form-group full-width">
+                    <label for="confirmPassword">Confirmer le mot de passe *</label>
+                    <div class="input-wrapper">
+                        <svg class="input-icon" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
+                        <input type="password" id="confirmPassword" minlength="12" placeholder="12 caractères minimum" required>
+                        <button type="button" class="toggle-password-btn" data-target="confirmPassword" title="Afficher/Masquer">
+                            <svg class="icon-eye-open" viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
+                            <svg class="icon-eye-closed" viewBox="0 0 24 24" style="display:none;"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path><line x1="1" y1="1" x2="23" y2="23"></line></svg>
+                        </button>
+                    </div>
+                    <div class="validation-hint" id="matchHint">● Les mots de passe doivent correspondre</div>
+                </div>
+
+            </div>
+
+            <button type="submit" class="btn-submit">Créer mon compte</button>
+
+            <p class="login-link">
+                Déjà un compte ? <a href="index.html">Se connecter</a>
+            </p>
+        </form>
+    </main>
+
+    <!-- Zone de Toast Notification -->
+    <div class="toast-container" id="toastContainer"></div>
+
+   <dialog id="popupInfo">
+    <h3 id="popupTitle">Information</h3>
+    <p id="popupMessage"></p>
+    <button onclick="fermerPopup()">Fermer</button>
+</dialog>
+    <script src="../js/register.js"></script>
+</body>
+</html>

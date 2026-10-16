@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="../css/D_auth.css">
+  <title>Authentification à Deux Facteurs (2FA)</title>
+
+</head>
+<body>
+
+  <div class="auth-card">
+    <button class="theme-toggle" id="themeToggle" onclick="toggleTheme()" title="Changer le thème">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="12" cy="12" r="5"></circle>
+        <line x1="12" y1="1" x2="12" y2="3"></line>
+        <line x1="12" y1="21" x2="12" y2="23"></line>
+      </svg>
+    </button>
+
+    <div class="header-icon">
+      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+        <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+      </svg>
+    </div>
+
+    <h1 class="title">Vérification 2FA</h1>
+    <p class="subtitle" id="subInstruction">Entrez le code à 6 chiffres envoyé par e-mail.</p>
+
+    <form id="otpForm">
+      <div class="otp-container">
+        <input type="text" class="otp-input" maxlength="1" pattern="[0-9]" inputmode="numeric" required>
+        <input type="text" class="otp-input" maxlength="1" pattern="[0-9]" inputmode="numeric" required>
+        <input type="text" class="otp-input" maxlength="1" pattern="[0-9]" inputmode="numeric" required>
+        <input type="text" class="otp-input" maxlength="1" pattern="[0-9]" inputmode="numeric" required>
+        <input type="text" class="otp-input" maxlength="1" pattern="[0-9]" inputmode="numeric" required>
+        <input type="text" class="otp-input" maxlength="1" pattern="[0-9]" inputmode="numeric" required>
+      </div>
+
+      <button type="submit" class="btn">Vérifier & Se Connecter</button>
+    </form>
+
+    <div class="resend-box">
+      Vous n'avez pas reçu le code ? <br>
+      <button class="resend-btn" id="resendBtn" disabled onclick="resendCode()">Renvoyer le code (<span id="timer">30</span>s)</button>
+    </div>
+
+    <div class="backup-code-toggle">
+      <a href="#" onclick="useBackupCode(); return false;">Utiliser un code de secours</a>
+    </div>
+  </div>
+
+  <div id="toastContainer" class="toast-container"></div>
+
+  <script src="../js/register_D_auth.js"></script>
+</body>
+</html>

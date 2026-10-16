@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="fr" data-theme="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="../css/forgot2.css">
+    <title>Nouveau mot de passe - Rapports d'Activités</title>
+
+</head>
+<body>
+
+    <!-- Toggle Theme Button -->
+    <button class="theme-toggle" id="themeToggleBtn" title="Changer de thème">🌙</button>
+
+    <main class="auth-card">
+        <div class="header-title">
+            <div class="brand-logo"><img class="ddtr" src="ddtr.jpeg" alt=""></div>
+            <h1>Étape 2 / 2</h1>
+            <p>Vérification du code et définition de votre nouveau mot de passe.</p>
+        </div>
+
+        <form id="resetStep2Form">
+            
+            <!-- 1. Code de Vérification (6 Chiffres) -->
+            <div class="form-group">
+                <label>
+                    Code de sécurité (6 chiffres)
+                </label>
+                <div class="otp-container" id="otpContainer">
+                    <input type="text" maxlength="1" class="otp-input" data-index="0" inputmode="numeric" pattern="[0-9]*" required autofocus>
+                    <input type="text" maxlength="1" class="otp-input" data-index="1" inputmode="numeric" pattern="[0-9]*" required>
+                    <input type="text" maxlength="1" class="otp-input" data-index="2" inputmode="numeric" pattern="[0-9]*" required>
+                    <input type="text" maxlength="1" class="otp-input" data-index="3" inputmode="numeric" pattern="[0-9]*" required>
+                    <input type="text" maxlength="1" class="otp-input" data-index="4" inputmode="numeric" pattern="[0-9]*" required>
+                    <input type="text" maxlength="1" class="otp-input" data-index="5" inputmode="numeric" pattern="[0-9]*" required>
+                </div>
+                
+                <div class="resend-box">
+                    <span>Vous n'avez rien reçu ?</span>
+                    <button type="button" class="resend-btn" id="resendBtn" disabled>
+                        Renvoyer (<span id="countdown">30</span>s)
+                    </button>
+                </div>
+            </div>
+
+            <!-- 2. Nouveau Mot de passe -->
+            <div class="form-group">
+                <label for="newPassword">Nouveau mot de passe *</label>
+                <div class="input-wrapper">
+                    <svg class="input-icon" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
+                    <input type="password" id="newPassword" minlength="12" placeholder="12 caractères minimum" required>
+                    <button type="button" class="toggle-password-btn" data-target="newPassword" title="Afficher/Masquer">
+                        <svg class="icon-eye-open" viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
+                        <svg class="icon-eye-closed" viewBox="0 0 24 24" style="display:none;"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path><line x1="1" y1="1" x2="23" y2="23"></line></svg>
+                    </button>
+                </div>
+
+                <!-- Jauge de force -->
+                <div class="strength-meter-container">
+                    <div class="strength-meter-bar">
+                        <div class="strength-meter-fill" id="strengthFill"></div>
+                    </div>
+                    <div class="strength-text">
+                        <span>Force : <strong id="strengthLabel">Faible</strong></span>
+                    </div>
+                </div>
+
+                <div class="validation-hints">
+                    <div class="validation-hint" id="lengthHint">● Minimum 12 caractères</div>
+                    <div class="validation-hint" id="specialCharHint">● Au moins un chiffre ou caractère spécial</div>
+                </div>
+            </div>
+
+            <!-- 3. Confirmation du mot de passe -->
+            <div class="form-group">
+                <label for="confirmPassword">Confirmer le mot de passe *</label>
+                <div class="input-wrapper">
+                    <svg class="input-icon" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>
+                    <input type="password" id="confirmPassword" placeholder="••••••••" required>
+                    <button type="button" class="toggle-password-btn" data-target="confirmPassword" title="Afficher/Masquer">
+                        <svg class="icon-eye-open" viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
+                        <svg class="icon-eye-closed" viewBox="0 0 24 24" style="display:none;"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path><line x1="1" y1="1" x2="23" y2="23"></line></svg>
+                    </button>
+                </div>
+                <div class="validation-hints">
+                    <div class="validation-hint" id="matchHint">● Les mots de passe doivent être identiques</div>
+                </div>
+            </div>
+
+            <button type="submit" class="btn-submit" id="btnSubmit">
+                <span class="spinner" id="spinner"></span>
+                <span class="btn-text">Valider le nouveau mot de passe</span>
+            </button>
+
+            <p class="login-link">
+                <a href="index.html">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="19" y1="12" x2="5" y2="12"></line><polyline points="12 19 5 12 12 5"></polyline></svg>
+                    Retour à la connexion
+                </a>
+            </p>
+        </form>
+    </main>
+
+    <!-- Zone Toast Notifications -->
+    <div class="toast-container" id="toastContainer"></div>
+
+    <script src="../js/forgot2.js"></script>
+</body>
+</html>

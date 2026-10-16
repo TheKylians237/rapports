@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="fr" data-theme="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="../css/forgot1.css">
+    <title>Mot de passe oublié - Rapports d'Activités</title>
+
+</head>
+<body>
+
+    <!-- Bouton Bascule Thème Sombre / Clair -->
+    <button class="theme-toggle" id="themeToggleBtn" title="Changer de thème">🌙</button>
+
+    <main class="auth-card">
+        <div class="header-title">
+            <div class="brand-logo"><img class="ddtr" src="ddtr.jpeg" alt=""></div>
+            <h1 id="pageTitle">Mot de passe oublié</h1>
+            <p id="pageSubtitle">Saisissez votre adresse email pour recevoir un code de réinitialisation.</p>
+        </div>
+
+       
+
+        <!-- Etape 1: Demande du code -->
+        <form id="step1Form" class="form-step active">
+            <div class="form-group">
+                <label for="identifier">Email *</label>
+                <div class="input-wrapper">
+                    <svg class="input-icon" viewBox="0 0 24 24"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"></path><polyline points="22,6 12,13 2,6"></polyline></svg>
+                    <input type="text" id="identifier" placeholder="ex: jean.dupont@service.com" required>
+                </div>
+            </div>
+
+            <button type="submit" class="btn-submit" id="btnStep1">
+                <span class="spinner" id="spinner1"></span>
+                <span class="btn-text" id="etape1">Envoyer le code</span>
+            </button>
+        </form>
+
+        <p class="login-link">
+            <a href="index.html">← Retour à la connexion</a>
+        </p>
+    </main>
+
+    <!-- Notification Toast Container -->
+    <div class="toast-container" id="toastContainer"></div>
+
+    <script src="../js/forgot1.js"></script>
+</body>
+</html>
