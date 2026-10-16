@@ -1,6 +1,9 @@
 const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const db = require('./db');
+const appSettings = require('./appSettings');
+const { sendAccountCredentials } = require('./mailer');
+const activityAudit = require('./activityAudit');
 
 let schemaReady;
 async function ensureAdminSchema() {
@@ -60,7 +63,7 @@ async function audit(req, action, targetId, details) {
   );
 }
 
-const validRoles = ['agent', 'chef_service', 'manager', 'admin'];
+const validRoles = ['agent', 'chef_service', 'manager', 'big_manager', 'admin'];
 const validDate = value => /^\d{4}-\d{2}-\d{2}$/.test(String(value || ''));
 
 exports.requireActiveAdmin = async(req,res,next)=>{
@@ -147,12 +150,30 @@ exports.createUser = async (req, res, next) => {
       VALUES (?,?,?,?,?,?,?,?,1)`, [id,fullName,username,email,phone,hash,role,department]);
     await connection.commit();
     await audit(req,'USER_CREATED',id,{username,email,role,department});
-    return res.status(201).json({ success:true, id, message:'Compte créé.' });
+    let emailSent = true;
+    try { await sendAccountCredentials(email, username, password); }
+    catch (mailError) { emailSent = false; console.error('Envoi des identifiants impossible:', mailError.message); }
+    return res.status(201).json({ success:true, id, emailSent, message:emailSent ? 'Compte créé et identifiants envoyés par e-mail.' : 'Compte créé, mais l’e-mail n’a pas pu être envoyé. Vérifiez la configuration SMTP.' });
   } catch (error) {
     try { await connection.rollback(); } catch (_) {}
     if (error.code === 'ER_DUP_ENTRY') return res.status(409).json({ success:false,message:'Ce nom utilisateur ou cet e-mail est déjà utilisé.' });
     next(error);
   } finally { connection.release(); }
+};
+
+exports.getRegistrationSetting = async (req,res,next) => {
+  try { await appSettings.ensureSettings(); const [rows] = await db.query("SELECT setting_value FROM app_settings WHERE setting_key='registration_open'"); return res.json({success:true,enabled:rows[0]?.setting_value==='1'}); }
+  catch(error){next(error);}
+};
+exports.setRegistrationSetting = async (req,res,next) => {
+  try {
+    const enabled = req.body?.enabled;
+    if (typeof enabled !== 'boolean') return res.status(400).json({success:false,message:'Le champ enabled doit être booléen.'});
+    await appSettings.ensureSettings();
+    await db.query("UPDATE app_settings SET setting_value=?,updated_by=? WHERE setting_key='registration_open'",[enabled?'1':'0',req.user.id]);
+    await audit(req, enabled ? 'REGISTRATION_ENABLED' : 'REGISTRATION_DISABLED', null, {});
+    return res.json({success:true,enabled});
+  } catch(error){next(error);}
 };
 
 exports.updateUser = async (req, res, next) => {
@@ -377,11 +398,19 @@ exports.listReviews = async(req,res,next)=>{
 exports.listAuditLogs = async (req,res,next) => {
   try {
     await ensureAdminSchema();
-    const [rows]=await db.query(`SELECT l.id,l.action,l.ip_address AS ipAddress,l.details,l.created_at AS createdAt,
+    const filterUser=String(req.query.userId||'').trim().slice(0,120);
+    const [adminRows]=await db.query(`SELECT l.id,l.action,l.ip_address AS ipAddress,l.details,l.created_at AS createdAt,
       actor.last_name AS actorName,actor.email AS actorEmail,l.target_id AS targetId
       FROM admin_audit_logs l LEFT JOIN users actor ON actor.id=l.actor_id
-      ORDER BY l.created_at DESC,l.id DESC LIMIT 300`);
-    return res.json({success:true,logs:rows});
+      WHERE (?='' OR l.actor_id=? OR actor.username=? OR actor.email=? OR actor.last_name LIKE ?) ORDER BY l.created_at DESC,l.id DESC LIMIT 300`,[filterUser,filterUser,filterUser,filterUser,`%${filterUser}%`]);
+    await activityAudit.ensureTable();
+    const [userRows]=await db.query(`SELECT l.id,CONCAT(l.action,' ',l.route,' [HTTP ',l.status_code,']') AS action,
+      l.ip_address AS ipAddress,JSON_OBJECT('route',l.route,'statusCode',l.status_code,'userAgent',l.user_agent) AS details,
+      l.created_at AS createdAt,u.last_name AS actorName,u.email AS actorEmail,l.user_id AS targetId
+      FROM activity_logs l LEFT JOIN users u ON u.id=l.user_id
+      WHERE (?='' OR l.user_id=? OR u.username=? OR u.email=? OR u.last_name LIKE ?) ORDER BY l.created_at DESC,l.id DESC LIMIT 300`,[filterUser,filterUser,filterUser,filterUser,`%${filterUser}%`]);
+    const logs=[...adminRows,...userRows].sort((a,b)=>new Date(b.createdAt)-new Date(a.createdAt)).slice(0,500);
+    return res.json({success:true,logs});
   } catch(error){next(error);}
 };
 

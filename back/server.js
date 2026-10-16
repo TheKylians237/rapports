@@ -8,6 +8,8 @@ const authRoutes = require('./authRoutes');
 const dashRoutes = require('./dashRoutes');
 const authController = require('./authController');
 const rateLimit = require('./rateLimit');
+const activityAudit = require('./activityAudit');
+const db = require('./db');
 
 const app = express();
 
@@ -21,12 +23,25 @@ app.use((req, res, next) => {
   res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
   next();
 });
-app.use(cors({ origin(origin, callback) {
+app.use((req, res, next) => cors({ origin(origin, callback) {
   if (!origin || configuredOrigins.includes(origin)) return callback(null, true);
-  return callback(new Error('Origine non autorisée'));
-} }));
+  // Intranet frontend served from another port on the same LAN hostname/IP.
+  // CORS is not an authentication mechanism; API routes still require JWT/roles.
+  try {
+    const originUrl = new URL(origin);
+    const requestHost = String(req.headers.host || '').split(':')[0].toLowerCase();
+    if (originUrl.protocol === 'http:' && requestHost && originUrl.hostname.toLowerCase() === requestHost) return callback(null, true);
+  } catch (_) {}
+  return callback(Object.assign(new Error('Origine non autorisée'), { status: 403 }));
+} })(req, res, next));
 app.use(express.json({ limit: '100kb' }));
 app.use(express.urlencoded({ extended: false, limit: '100kb' }));
+app.use(activityAudit.middleware);
+
+app.get('/api/health', async (_req, res) => {
+  try { await db.query('SELECT 1'); return res.json({ success: true, status: 'ready' }); }
+  catch (_) { return res.status(503).json({ success: false, status: 'starting', message: 'La base de données est momentanément indisponible.' }); }
+});
 
 // Exposer tous les sous-dossiers de 'front'
 app.use(express.static(path.join(__dirname, '../front')));
@@ -38,7 +53,7 @@ app.use(express.static(path.join(__dirname, '../front/html')));
 app.use('/api/auth', authRoutes);
 
 // Si vous voulez garder une route directe /api/login (conseillé d'utiliser POST pour du login)
-app.post('/api/login', rateLimit({ max: 8 }), authController.login);
+app.post('/api/login', rateLimit({ max: 8, keyBy: req => req.body?.identity }), authController.login);
 
 
 // Montage des routes sur le préfixe /api
@@ -60,6 +75,7 @@ app.use((err, req, res, next) => {
 });
 
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => {
-  console.log(`Serveur d'authentification démarré sur http://localhost:${PORT}`);
+const HOST = process.env.HOST || '0.0.0.0';
+app.listen(PORT, HOST, () => {
+  console.log(`Serveur accessible sur http://${HOST}:${PORT} (localhost ou adresse IP du réseau local)`);
 });

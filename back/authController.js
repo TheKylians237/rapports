@@ -8,6 +8,7 @@ const { sendResetOTP } = require('./mailer'); // Assurez-vous que le chemin vers
 const crypto = require('crypto'); // Natif dans Node.js pour générer les UUID v4
 const db = require('./db'); // Remplacez par le chemin vers votre fichier de connexion MySQL
 const { send2FACode } = require('./mailer');
+const appSettings = require('./appSettings');
 const JWT_SECRET = require('./jwtConfig');
 
 // ==========================================
@@ -28,6 +29,7 @@ const isStrongPassword = (password) => {
 
 exports.register = async (req, res) => {
   try {
+    if (!(await appSettings.getRegistrationOpen())) return res.status(403).json({ success: false, message: 'La création de comptes est temporairement désactivée par l’administrateur.' });
     const { fullName, email, username, phone, department, password } = req.body;
 
     // 1. Contrôle des champs obligatoires
@@ -60,7 +62,7 @@ exports.register = async (req, res) => {
     const passwordHash = await bcrypt.hash(password, salt);
 
     // 4. Préparation des variables
-    const userId = 'usr_' + Date.now();
+    const userId = crypto.randomUUID();
     const userRole = 'agent';
     const userPhone = phone ? phone.trim() : null;
 
@@ -87,6 +89,7 @@ exports.register = async (req, res) => {
     });
 
   } catch (error) {
+    if (error.code === 'ER_DUP_ENTRY') return res.status(409).json({ success: false, message: 'Un compte existe déjà avec cet e-mail ou ce nom d’utilisateur.' });
     // Affiche le détail précis de l'erreur dans la console du terminal Node.js
     console.error('Erreur SQL ou serveur :', error);
     
@@ -97,6 +100,10 @@ exports.register = async (req, res) => {
   }
 };
 
+exports.registrationStatus = async (_req,res) => {
+  try { return res.json({success:true,enabled:await appSettings.getRegistrationOpen()}); }
+  catch(error) { console.error('Lecture du réglage inscription impossible:',error.message); return res.status(503).json({success:false,message:'État des inscriptions temporairement indisponible.'}); }
+};
 
 exports.login = async (req, res) => {
     const { identity, password, rememberMe } = req.body;
@@ -198,7 +205,8 @@ exports.setup2FA = async (req, res) => {
 
     res.json({ secret, qrCodeUrl });
   } catch (error) {
-    res.status(500).json({ message: 'Erreur configuration 2FA', error: error.message });
+    console.error('Échec configuration 2FA:', error.message);
+    res.status(500).json({ message: 'Erreur serveur lors de la configuration 2FA.' });
   }
 };
 
@@ -230,7 +238,8 @@ exports.verifyAndEnable2FA = async (req, res) => {
 
     res.json({ message: '2FA activé avec succès.', backupCodes, username: user.username });
   } catch (error) {
-    res.status(500).json({ message: 'Erreur validation 2FA', error: error.message });
+    console.error('Échec validation 2FA:', error.message);
+    res.status(500).json({ message: 'Erreur serveur lors de la validation 2FA.' });
   }
 };
 
@@ -285,7 +294,7 @@ exports.validate2FA = async (req, res) => {
     });
     console.log('L’enregistrement du rapport :', user.id);
   } catch (error) {
-    res.status(401).json({ message: 'Session expirée ou invalide.', error: error.message });
+    res.status(401).json({ message: 'Session expirée ou invalide.' });
   }
 };
 
@@ -309,8 +318,9 @@ exports.verify2FA = async (req, res) => {
 
         const user = rows[0];
 
-        // Effacer le code OTP après utilisation
-        await db.execute('UPDATE users SET two_factor_code = NULL, two_factor_expires = NULL WHERE id = ?', [user.id]);
+        // Consommer l’OTP atomiquement : une même vérification concurrente ne peut pas émettre deux sessions.
+        const [consumed] = await db.execute('UPDATE users SET two_factor_code = NULL, two_factor_expires = NULL WHERE id = ? AND two_factor_code = ? AND two_factor_expires > NOW()', [user.id, code]);
+        if (!consumed.affectedRows) return res.status(401).json({ success: false, message: 'Code OTP déjà utilisé ou expiré.' });
 
         // Génération du Token JWT définitif avec le RÔLE
         const token = jwt.sign(
@@ -398,7 +408,7 @@ exports.forgotPassword = async (req, res) => {
 
   } catch (error) {
     console.error('Erreur forgotPassword:', error);
-    return res.status(500).json({ message: "Erreur lors du traitement de la demande", error: error.message });
+    return res.status(500).json({ message: "Erreur lors du traitement de la demande." });
   }
 };
 
@@ -534,8 +544,7 @@ exports.verifyOTP = async (req, res) => {
   } catch (error) {
     console.error("Erreur lors de la vérification de l'OTP :", error);
     return res.status(500).json({ 
-      message: "Erreur serveur lors de la vérification de l'OTP.", 
-      error: error.message 
+      message: "Erreur serveur lors de la vérification de l'OTP."
     });
   }
 };

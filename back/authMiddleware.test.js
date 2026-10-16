@@ -37,3 +37,10 @@ test('restrictTo bloque les requêtes sans rôle', () => {
   assert.equal(result.next, false);
   assert.equal(result.status, 403);
 });
+
+test('Big manager reçoit uniquement les routes explicitement autorisées', () => {
+  assert.equal(authorize('Big_manager', 'big_manager').next, true);
+  const adminOnly = authorize('big_manager', 'admin');
+  assert.equal(adminOnly.next, false);
+  assert.equal(adminOnly.status, 403);
+});

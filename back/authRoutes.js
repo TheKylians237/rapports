@@ -6,16 +6,20 @@ const { verifyAvatar } = require('./profileMiddleware');
 const dashesController = require('./dashesController');
 const adminController = require('./adminController');
 const rateLimit = require('./rateLimit');
-const loginLimit = rateLimit({ max: 8 });
-const otpLimit = rateLimit({ max: 8 });
-const recoveryLimit = rateLimit({ max: 4 });
+const bigManagerController = require('./bigManagerController');
+const activityAudit = require('./activityAudit');
+const loginLimit = rateLimit({ max: 8, keyBy: req => req.body?.identity });
+const otpLimit = rateLimit({ max: 8, keyBy: req => req.body?.userId || req.body?.preAuthToken });
+const recoveryLimit = rateLimit({ max: 4, keyBy: req => req.body?.email || req.body?.userId });
+const registrationLimit = rateLimit({ max: 25 });
 
 // ============================================================================
 // 1. ROUTES PUBLIQUES (Non protégées)
 // ============================================================================
 
 // Authentification de base & 2FA
-router.post('/register', recoveryLimit, authController.register);
+router.post('/register', registrationLimit, authController.register);
+router.get('/registration-status', authController.registrationStatus);
 router.post('/login', loginLimit, authController.login);
 router.post('/verify-2fa', otpLimit, authController.verify2FA);
 router.post('/resend-2fa', otpLimit, authController.resend2FA);
@@ -49,6 +53,7 @@ router.post('/save-task', protect, dashesController.saveTask);
 
 // Gestion du Profil & Mot de passe
 router.get('/getprofile', protect, dashesController.getProfile);
+router.get('/activity-history', protect, activityAudit.getOwnHistory);
 router.put('/profile', protect, dashesController.updateProfile);
 router.put('/change-password', protect, dashesController.changePassword);
 
@@ -72,6 +77,10 @@ router.get('/detailed-history', protect, dashesController.get_detailed_history);
 
 // Administration — chaque route vérifie le rôle côté serveur.
 router.get('/admin/overview', protect, adminController.requireActiveAdmin, adminController.getOverview);
+router.get('/admin/registration', protect, adminController.requireActiveAdmin, adminController.getRegistrationSetting);
+router.put('/admin/registration', protect, adminController.requireActiveAdmin, adminController.setRegistrationSetting);
+router.post('/admin/material-movements', protect, adminController.requireActiveAdmin, bigManagerController.createMovement);
+router.get('/admin/material-movements', protect, adminController.requireActiveAdmin, bigManagerController.listMovements);
 router.get('/admin/users', protect, adminController.requireActiveAdmin, adminController.listUsers);
 router.post('/admin/users', protect, adminController.requireActiveAdmin, adminController.createUser);
 router.put('/admin/users/:userId', protect, adminController.requireActiveAdmin, adminController.updateUser);
@@ -114,5 +123,9 @@ router.get('/department/colleagues', protect, dashesController.getDepartmentColl
 router.get('/chef-dashboard/activities/:activityId', protect, restrictTo('chef_service'), dashesController.getChefServiceActivityDetails);
 router.patch('/chef-dashboard/activities/:activityId/status', protect, restrictTo('chef_service'), dashesController.updateChefServiceActivityStatus);
 router.patch('/chef-dashboard/activities/:activityId/decision', protect, restrictTo('chef_service'), dashesController.decideChefServiceActivity);
+
+router.get('/big-manager/overview', protect, restrictTo('big_manager'), bigManagerController.getOverview);
+router.post('/big-manager/ratings', protect, restrictTo('big_manager'), bigManagerController.rateManager);
+router.post('/big-manager/reviews', protect, restrictTo('big_manager'), bigManagerController.addReview);
 
 module.exports = router;

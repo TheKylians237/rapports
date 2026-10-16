@@ -8,6 +8,17 @@ const transporter = nodemailer.createTransport({
   auth: { user: process.env.MAIL_USER, pass: process.env.MAIL_PASSWORD || process.env.MAIL_PASS }
 });
 
+const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+async function sendAccountCredentials(toEmail, username, password) {
+  if (!process.env.MAIL_USER || !(process.env.MAIL_PASSWORD || process.env.MAIL_PASS)) throw new Error('Configuration e-mail absente.');
+  return transporter.sendMail({
+    from: `"Gestion des Rapports" <${process.env.MAIL_USER}>`, to: toEmail,
+    subject: 'Votre compte Gestion des Rapports',
+    text: `Votre compte est prêt. Identifiant : ${username}\nMot de passe initial : ${password}\nPour votre sécurité, remplacez ce mot de passe depuis votre profil après la première connexion.`,
+    html: `<p>Votre compte Gestion des Rapports est prêt.</p><p>Identifiant : <strong>${escapeHtml(username)}</strong><br>Mot de passe initial : <strong>${escapeHtml(password)}</strong></p><p>Pour votre sécurité, remplacez ce mot de passe depuis votre profil après la première connexion.</p>`
+  });
+}
+
 // Fonction exportée pour envoyer le code 2FA
 const send2FACode = async (toEmail, code) => {
     const mailOptions = {
@@ -49,5 +60,6 @@ const sendResetOTP = async (toEmail, otpCode) => {
 module.exports = {
   transporter,
   send2FACode,
-  sendResetOTP
+  sendResetOTP,
+  sendAccountCredentials
 };

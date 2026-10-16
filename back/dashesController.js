@@ -118,8 +118,7 @@ exports.getDashboardData = async (req, res) => {
 
     return res.status(500).json({
       success: false,
-      message: 'Erreur serveur lors de la récupération des rapports.',
-      error: error.message
+      message: 'Erreur serveur lors de la récupération des rapports.'
     });
   }
 };
@@ -537,8 +536,7 @@ exports.getProfile = async (req, res) => {
     console.error('❌ ERREUR SERVEUR (getProfile):', error.message);
     return res.status(500).json({
       success: false,
-      message: 'Erreur lors de la récupération du profil.',
-      error: error.message
+      message: 'Erreur lors de la récupération du profil.'
     });
   }
 };
@@ -574,8 +572,7 @@ exports.updateProfile = async (req, res) => {
     console.error('❌ ERREUR SERVEUR (updateProfile):', error.message);
     return res.status(500).json({
       success: false,
-      message: 'Erreur lors de la mise à jour du profil.',
-      error: error.message
+      message: 'Erreur lors de la mise à jour du profil.'
     });
   }
 };
@@ -633,8 +630,7 @@ exports.changePassword = async (req, res) => {
     console.error('❌ ERREUR SERVEUR (changePassword):', error.message);
     return res.status(500).json({
       success: false,
-      message: 'Erreur serveur lors du changement de mot de passe.',
-      error: error.message
+      message: 'Erreur serveur lors du changement de mot de passe.'
     });
   }
 };
@@ -727,8 +723,7 @@ exports.chargeAvatar = async (req, res) => {
 
     return res.status(500).json({
       success: false,
-      message: 'Erreur lors du traitement de l\'avatar.',
-      error: error.message
+      message: 'Erreur lors du traitement de l\'avatar.'
     });
   }
 };
@@ -769,8 +764,7 @@ exports.loadAvatar = async (req, res) => {
     console.error('❌ ERREUR SERVEUR (loadAvatar) :', error.message);
     return res.status(500).json({
       success: false,
-      message: "Erreur serveur lors de la récupération de l'avatar.",
-      error: error.message
+      message: "Erreur serveur lors de la récupération de l'avatar."
     });
   }
 };
