@@ -20,6 +20,7 @@ const registrationLimit = rateLimit({ max: 25 });
 // Authentification de base & 2FA
 router.post('/register', registrationLimit, authController.register);
 router.get('/registration-status', authController.registrationStatus);
+router.get('/registration-options', authController.registrationOptions);
 router.post('/login', loginLimit, authController.login);
 router.post('/verify-2fa', otpLimit, authController.verify2FA);
 router.post('/resend-2fa', otpLimit, authController.resend2FA);
@@ -125,6 +126,7 @@ router.patch('/chef-dashboard/activities/:activityId/status', protect, restrictT
 router.patch('/chef-dashboard/activities/:activityId/decision', protect, restrictTo('chef_service'), dashesController.decideChefServiceActivity);
 
 router.get('/big-manager/overview', protect, restrictTo('big_manager'), bigManagerController.getOverview);
+router.get('/big-manager/agents/:agentId', protect, restrictTo('big_manager'), bigManagerController.getAgentDetails);
 router.post('/big-manager/ratings', protect, restrictTo('big_manager'), bigManagerController.rateManager);
 router.post('/big-manager/reviews', protect, restrictTo('big_manager'), bigManagerController.addReview);
 

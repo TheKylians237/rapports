@@ -61,6 +61,70 @@ exports.getOverview = async (req,res,next) => {
   } catch(error){next(error);}
 };
 
+exports.getAgentDetails = async (req,res,next) => {
+  try {
+    const agentId=String(req.params.agentId||'').trim();
+    const parsedDays=Number.parseInt(req.query.days,10);
+    const days=Number.isInteger(parsedDays)?Math.min(3650,Math.max(1,parsedDays)):30;
+    const start=new Date();
+    start.setHours(0,0,0,0);
+    start.setDate(start.getDate()-(days-1));
+    const startDate=`${start.getFullYear()}-${String(start.getMonth()+1).padStart(2,'0')}-${String(start.getDate()).padStart(2,'0')}`;
+    const [profiles]=await db.query(`SELECT u.id,u.last_name AS fullName,u.username,u.email,u.phone,u.role,
+      COALESCE(r.name,u.role) AS roleName,u.department,COALESCE(d.name,u.department) AS departmentName,
+      u.job_title AS jobTitle,u.bio,u.avatar_url AS avatarUrl,u.is_active AS isActive,
+      u.created_at AS createdAt,u.updated_at AS updatedAt
+      FROM users u LEFT JOIN roles r ON r.id=u.role LEFT JOIN departments d ON d.id=u.department
+      WHERE u.id=? AND u.is_active=1 AND LOWER(TRIM(u.role))='agent' LIMIT 1`,[agentId]);
+    if(!profiles.length)return res.status(404).json({success:false,message:'Agent actif introuvable.'});
+    const profile=profiles[0];
+    const [summaryRows]=await db.query(`SELECT COUNT(DISTINCT dr.id) AS reportCount,
+      COUNT(ra.id) AS activityCount,
+      SUM(CASE WHEN LOWER(TRIM(ra.status))='completed' THEN 1 ELSE 0 END) AS completedActivities,
+      SUM(CASE WHEN LOWER(TRIM(ra.status)) IN ('pending','in_progress') THEN 1 ELSE 0 END) AS pendingActivities,
+      COALESCE(SUM(ra.hours),0) AS totalHours,
+      COUNT(DISTINCT CASE WHEN LOWER(TRIM(dr.status)) IN ('approved','validated','accepted') THEN dr.id END) AS approvedReports,
+      COUNT(DISTINCT CASE WHEN LOWER(TRIM(dr.status)) IN ('submitted','pending') THEN dr.id END) AS pendingReports,
+      COUNT(DISTINCT CASE WHEN LOWER(TRIM(dr.status)) IN ('rejected','refused') THEN dr.id END) AS rejectedReports
+      FROM daily_reports dr LEFT JOIN report_activities ra ON ra.daily_report_id=dr.id
+      WHERE dr.user_id=? AND dr.report_date>=?`,[agentId,startDate]);
+    const summary=summaryRows[0]||{};
+    for(const key of ['reportCount','activityCount','completedActivities','pendingActivities','approvedReports','pendingReports','rejectedReports'])summary[key]=Number(summary[key]||0);
+    summary.totalHours=Number(summary.totalHours||0);
+    summary.completionRate=summary.activityCount?Math.round(summary.completedActivities*1000/summary.activityCount)/10:0;
+    const [reports]=await db.query(`SELECT dr.id,dr.report_date AS reportDate,dr.status,dr.total_hours AS totalHours,
+      dr.observations,dr.objectives,dr.next_day_targets AS nextDayTargets,dr.general_comments AS generalComments,
+      dr.review_comment AS reviewComment,reviewer.last_name AS reviewerName,dr.reviewed_at AS reviewedAt,
+      COUNT(ra.id) AS activityCount,COALESCE(SUM(ra.hours),0) AS activityHours
+      FROM daily_reports dr LEFT JOIN report_activities ra ON ra.daily_report_id=dr.id
+      LEFT JOIN users reviewer ON reviewer.id=dr.reviewed_by
+      WHERE dr.user_id=? AND dr.report_date>=?
+      GROUP BY dr.id,dr.report_date,dr.status,dr.total_hours,dr.observations,dr.objectives,
+        dr.next_day_targets,dr.general_comments,dr.review_comment,reviewer.last_name,dr.reviewed_at
+      ORDER BY dr.report_date DESC,dr.created_at DESC LIMIT 500`,[agentId,startDate]);
+    const [activities]=await db.query(`SELECT ra.id,ra.daily_report_id AS reportId,dr.report_date AS reportDate,
+      dr.status AS reportStatus,ra.description,ra.objectives,ra.category,ra.status,ra.obsevations AS observations,
+      ra.hours,ra.created_at AS createdAt
+      FROM report_activities ra JOIN daily_reports dr ON dr.id=ra.daily_report_id
+      WHERE dr.user_id=? AND dr.report_date>=? ORDER BY dr.report_date DESC,ra.id DESC LIMIT 1000`,[agentId,startDate]);
+    const [issues]=await db.query(`SELECT ri.id,ri.report_id AS reportId,dr.report_date AS reportDate,
+      ri.issue_description AS description,ri.proposed_solution AS proposedSolution,
+      ri.needs_manager_help AS needsManagerHelp,ri.status,ri.review_comment AS reviewComment,
+      reviewer.last_name AS reviewerName,ri.reviewed_at AS reviewedAt,ri.created_at AS createdAt
+      FROM report_issues ri JOIN daily_reports dr ON dr.id=ri.report_id
+      LEFT JOIN users reviewer ON reviewer.id=ri.reviewed_by
+      WHERE dr.user_id=? AND dr.report_date>=? ORDER BY ri.created_at DESC LIMIT 500`,[agentId,startDate]);
+    const [ratings]=await db.query(`SELECT n.evaluation_date AS evaluationDate,n.rating,n.comment,
+      manager.last_name AS managerName,manager.username AS managerUsername
+      FROM notation n JOIN users manager ON manager.id=n.manager_id
+      WHERE n.agent_id=? AND n.evaluation_date>=? ORDER BY n.evaluation_date DESC,n.updated_at DESC LIMIT 500`,[agentId,startDate]);
+    const categories=Object.values(activities.reduce((acc,item)=>{const label=String(item.category||'Non classée');if(!acc[label])acc[label]={category:label,count:0,hours:0};acc[label].count+=1;acc[label].hours+=Number(item.hours||0);return acc;},{})).sort((a,b)=>b.count-a.count);
+    const completion=summary.activityCount?`${summary.completedActivities}/${summary.activityCount} activités terminées (${summary.completionRate} %)`:'aucune activité enregistrée';
+    const narrative=`Sur les ${days} derniers jours (depuis le ${new Date(`${startDate}T12:00:00`).toLocaleDateString('fr-FR')}), ${profile.fullName} a transmis ${summary.reportCount} rapport${summary.reportCount===1?'':'s'} et réalisé ${summary.activityCount} activité${summary.activityCount===1?'':'s'}. ${completion}. Le temps déclaré totalise ${summary.totalHours.toFixed(1)} h. ${issues.length?`${issues.length} difficulté${issues.length===1?'':'s'} signalée${issues.length===1?'':'s'}; `:'Aucune difficulté signalée sur la période; '}${ratings.length?`${ratings.length} notation${ratings.length===1?'':'s'} reçue${ratings.length===1?'':'s'}, moyenne de ${(ratings.reduce((sum,row)=>sum+Number(row.rating),0)/ratings.length).toFixed(1)}/5.`:'aucune notation enregistrée sur la période.'}`;
+    return res.json({success:true,days,startDate,profile,summary,reports,activities,issues,ratings,categories,narrative});
+  }catch(error){next(error);}
+};
+
 exports.addReview = async(req,res,next)=>{
   try{
     const targetId=String(req.body?.targetId||'').trim(),reviewText=String(req.body?.reviewText||'').trim();

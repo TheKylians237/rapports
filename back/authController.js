@@ -29,20 +29,27 @@ const isStrongPassword = (password) => {
 
 exports.register = async (req, res) => {
   try {
+    await require('./adminController').ensureReferenceSchema();
     if (!(await appSettings.getRegistrationOpen())) return res.status(403).json({ success: false, message: 'La création de comptes est temporairement désactivée par l’administrateur.' });
-    const { fullName, email, username, phone, department, password } = req.body;
+    const { fullName, email, username, phone, department, role, password } = req.body;
+    const departmentId = String(department || '').trim();
+    const roleId = String(role || 'agent').trim().toLowerCase().replace(/[\s-]+/g, '_');
 
     // 1. Contrôle des champs obligatoires
-    if (!fullName || !email || !username || !password || !department ||
+    if (!fullName || !email || !username || !password || !departmentId || !['agent','manager','chef_service'].includes(roleId) ||
         typeof password !== 'string' || password.length < 12 || password.length > 200 ||
         !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email)) ||
         String(username).trim().length > 50 || String(fullName).trim().length > 50 ||
-        String(department).trim().length > 100) {
+        departmentId.length > 100) {
       return res.status(400).json({ 
         success: false, 
         message: 'Veuillez remplir tous les champs obligatoires.' 
       });
     }
+
+    const [departments] = await pool.query('SELECT id FROM departments WHERE id=? AND is_active=1 LIMIT 1', [departmentId]);
+    const [roles] = await pool.query('SELECT id FROM roles WHERE id=? AND is_active=1 LIMIT 1', [roleId]);
+    if (!departments.length || !roles.length) return res.status(400).json({ success:false,message:'Choisissez un rôle et un département actifs dans les listes.' });
 
     // 2. Vérification d'existence préalable (Email ou Username)
     const [existingUsers] = await pool.query(
@@ -63,7 +70,7 @@ exports.register = async (req, res) => {
 
     // 4. Préparation des variables
     const userId = crypto.randomUUID();
-    const userRole = 'agent';
+    const userRole = roles[0].id;
     const userPhone = phone ? phone.trim() : null;
 
     // 5. Requête SQL d'insertion (Exactement 8 colonnes pour 8 valeurs)
@@ -79,7 +86,7 @@ exports.register = async (req, res) => {
         userPhone,
         passwordHash,
         userRole,
-        department.trim()
+        departments[0].id
       ]
     );
 
@@ -97,6 +104,18 @@ exports.register = async (req, res) => {
       success: false, 
       message: 'Erreur interne du serveur lors de la création du compte.', 
     });
+  }
+};
+
+exports.registrationOptions = async (_req,res) => {
+  try {
+    await require('./adminController').ensureReferenceSchema();
+    const [departments] = await pool.query('SELECT id,name FROM departments WHERE is_active=1 ORDER BY name');
+    const [roles] = await pool.query("SELECT id,name FROM roles WHERE is_active=1 AND id IN ('agent','manager','chef_service') ORDER BY CASE id WHEN 'agent' THEN 1 ELSE 2 END");
+    return res.json({success:true,departments,roles});
+  } catch(error) {
+    console.error('Chargement des options d’inscription impossible:',error.message);
+    return res.status(503).json({success:false,message:'Les options d’inscription sont temporairement indisponibles.'});
   }
 };
 

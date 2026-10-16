@@ -9,12 +9,20 @@ let schemaReady;
 async function ensureAdminSchema() {
   if (!schemaReady) schemaReady = (async () => {
     await db.query(`CREATE TABLE IF NOT EXISTS departments (
-      id varchar(36) NOT NULL PRIMARY KEY,
+      id varchar(100) NOT NULL PRIMARY KEY,
       name varchar(100) NOT NULL UNIQUE,
       is_active tinyint(1) NOT NULL DEFAULT 1,
       created_at timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+    await db.query(`CREATE TABLE IF NOT EXISTS roles (
+      id varchar(30) NOT NULL PRIMARY KEY,
+      name varchar(60) NOT NULL,
+      is_active tinyint(1) NOT NULL DEFAULT 1
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+    await db.query(`INSERT IGNORE INTO roles(id,name) VALUES
+      ('agent','Agent'),('chef_service','Chef de service'),('manager','Manager'),
+      ('chef_de_service','Chef de service'),('chef','Chef'),('big_manager','Big manager'),('admin','Administrateur')`);
     await db.query(`CREATE TABLE IF NOT EXISTS admin_audit_logs (
       id bigint unsigned NOT NULL AUTO_INCREMENT PRIMARY KEY,
       actor_id varchar(36) NULL,
@@ -49,12 +57,29 @@ async function ensureAdminSchema() {
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
     await db.query(`INSERT IGNORE INTO admin_retention_policies (entity_type,retention_days,is_enabled)
       VALUES ('daily_report',365,0),('report_issue',365,0),('notation',365,0)`);
+    await db.query('ALTER TABLE departments CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci');
+    await db.query('ALTER TABLE departments MODIFY id varchar(100) NOT NULL');
     await db.query(`INSERT IGNORE INTO departments (id, name)
-      SELECT UUID(), TRIM(department) FROM users
+      SELECT TRIM(department), TRIM(department) FROM users
       WHERE department IS NOT NULL AND TRIM(department) <> '' GROUP BY TRIM(department)`);
+    // Le nom existant sert de clé de département afin de préserver les relations
+    // et d'éviter de perdre les affectations lors de la normalisation.
+    await db.query('UPDATE departments SET id=name WHERE id<>name');
+    await db.query("UPDATE users SET role=LOWER(REPLACE(REPLACE(TRIM(role),' ','_'),'-','_')) WHERE role IS NOT NULL");
+    await db.query(`INSERT IGNORE INTO roles(id,name)
+      SELECT LOWER(REPLACE(REPLACE(TRIM(role),' ','_'),'-','_')), LOWER(REPLACE(REPLACE(TRIM(role),' ','_'),'-','_'))
+      FROM users WHERE role IS NOT NULL AND TRIM(role)<>'' AND CHAR_LENGTH(TRIM(role))<=30`);
+    await db.query("ALTER TABLE users MODIFY role varchar(30) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'agent', MODIFY department varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL");
+    const [[roleForeignKey]] = await db.query(`SELECT COUNT(*) AS count FROM information_schema.TABLE_CONSTRAINTS
+      WHERE CONSTRAINT_SCHEMA=DATABASE() AND TABLE_NAME='users' AND CONSTRAINT_NAME='fk_users_role_id'`);
+    if (!Number(roleForeignKey.count)) await db.query('ALTER TABLE users ADD CONSTRAINT fk_users_role_id FOREIGN KEY (role) REFERENCES roles(id) ON UPDATE CASCADE ON DELETE RESTRICT');
+    const [[departmentForeignKey]] = await db.query(`SELECT COUNT(*) AS count FROM information_schema.TABLE_CONSTRAINTS
+      WHERE CONSTRAINT_SCHEMA=DATABASE() AND TABLE_NAME='users' AND CONSTRAINT_NAME='fk_users_department_id'`);
+    if (!Number(departmentForeignKey.count)) await db.query('ALTER TABLE users ADD CONSTRAINT fk_users_department_id FOREIGN KEY (department) REFERENCES departments(id) ON UPDATE CASCADE ON DELETE RESTRICT');
   })().catch(error => { schemaReady = null; throw error; });
   return schemaReady;
 }
+exports.ensureReferenceSchema = ensureAdminSchema;
 
 async function audit(req, action, targetId, details) {
   await db.query(
@@ -141,13 +166,13 @@ exports.createUser = async (req, res, next) => {
     if (!fullName || !username || !/^\S+@\S+\.\S+$/.test(email) || !department || !validRoles.includes(role) || password.length < 10) {
       return res.status(400).json({ success:false, message:'Renseignez le nom, le nom utilisateur, un e-mail valide, le département, le rôle et un mot de passe d’au moins 10 caractères.' });
     }
-    const [deptRows] = await db.query('SELECT id FROM departments WHERE name=? AND is_active=1', [department]);
+    const [deptRows] = await db.query('SELECT id FROM departments WHERE id=? AND is_active=1', [department]);
     if (!deptRows.length) return res.status(400).json({ success:false, message:'Département introuvable ou inactif.' });
     const id = crypto.randomUUID();
     const hash = await bcrypt.hash(password, 10);
     await connection.beginTransaction();
     await connection.query(`INSERT INTO users (id,last_name,username,email,phone,password_hash,role,department,is_active)
-      VALUES (?,?,?,?,?,?,?,?,1)`, [id,fullName,username,email,phone,hash,role,department]);
+      VALUES (?,?,?,?,?,?,?,?,1)`, [id,fullName,username,email,phone,hash,role,deptRows[0].id]);
     await connection.commit();
     await audit(req,'USER_CREATED',id,{username,email,role,department});
     let emailSent = true;
@@ -198,10 +223,10 @@ exports.updateUser = async (req, res, next) => {
       const [[admins]] = await db.query("SELECT COUNT(*) AS total FROM users WHERE is_active=1 AND LOWER(TRIM(role))='admin'");
       if (Number(admins.total)<=1) return res.status(409).json({success:false,message:'Le dernier administrateur actif ne peut pas être rétrogradé.'});
     }
-    const [deptRows] = await db.query('SELECT id FROM departments WHERE name=? AND is_active=1', [department]);
+    const [deptRows] = await db.query('SELECT id FROM departments WHERE id=? AND is_active=1', [department]);
     if (!deptRows.length) return res.status(400).json({ success:false,message:'Département introuvable ou inactif.' });
     await db.query(`UPDATE users SET last_name=?,username=?,email=?,phone=?,department=?,role=?,job_title=? WHERE id=?`,
-      [fullName,username,email,phone,department,role,jobTitle,id]);
+      [fullName,username,email,phone,deptRows[0].id,role,jobTitle,id]);
     await audit(req,'USER_UPDATED',id,{username,email,role,department});
     return res.json({ success:true,message:'Utilisateur mis à jour.' });
   } catch(error) {
@@ -265,7 +290,7 @@ exports.createDepartment = async (req,res,next) => {
     await ensureAdminSchema();
     const name=String(req.body?.name||'').trim().slice(0,100);
     if(!name) return res.status(400).json({success:false,message:'Le nom du département est obligatoire.'});
-    const id=crypto.randomUUID();
+    const id=name;
     await db.query('INSERT INTO departments(id,name,is_active) VALUES(?,?,1)',[id,name]);
     await audit(req,'DEPARTMENT_CREATED',id,{name});
     return res.status(201).json({success:true,id,name});
@@ -291,7 +316,7 @@ exports.updateDepartment = async (req,res,next) => {
       if(Number(counts.total)) return res.status(409).json({success:false,message:'Réaffectez ou désactivez les utilisateurs avant de désactiver ce département.'});
     }
     await connection.beginTransaction();
-    await connection.query('UPDATE departments SET name=?,is_active=? WHERE id=?',[name,active===false?0:1,id]);
+    await connection.query('UPDATE departments SET id=?,name=?,is_active=? WHERE id=?',[name,name,active===false?0:1,id]);
     if(name!==oldName) await connection.query('UPDATE users SET department=? WHERE department=?',[name,oldName]);
     await connection.commit();
     await audit(req,name!==oldName?'DEPARTMENT_RENAMED':active===false?'DEPARTMENT_DEACTIVATED':'DEPARTMENT_UPDATED',id,{oldName,name});
