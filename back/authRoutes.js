@@ -80,8 +80,6 @@ router.get('/detailed-history', protect, dashesController.get_detailed_history);
 router.get('/admin/overview', protect, adminController.requireActiveAdmin, adminController.getOverview);
 router.get('/admin/registration', protect, adminController.requireActiveAdmin, adminController.getRegistrationSetting);
 router.put('/admin/registration', protect, adminController.requireActiveAdmin, adminController.setRegistrationSetting);
-router.post('/admin/material-movements', protect, adminController.requireActiveAdmin, bigManagerController.createMovement);
-router.get('/admin/material-movements', protect, adminController.requireActiveAdmin, bigManagerController.listMovements);
 router.get('/admin/users', protect, adminController.requireActiveAdmin, adminController.listUsers);
 router.post('/admin/users', protect, adminController.requireActiveAdmin, adminController.createUser);
 router.put('/admin/users/:userId', protect, adminController.requireActiveAdmin, adminController.updateUser);

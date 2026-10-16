@@ -47,7 +47,7 @@ app.get('/api/health', async (_req, res) => {
 app.use(express.static(path.join(__dirname, '../front')));
 
 // Exposer 'front/html' pour accéder directement aux pages
-app.use(express.static(path.join(__dirname, '../front/html')));
+app.use(express.static(path.join(__dirname, '../front/html'), { index: false }));
 
 // Charger les routes de l'API (ex: /api/auth/login, /api/auth/register, etc.)
 app.use('/api/auth', authRoutes);
@@ -59,9 +59,9 @@ app.post('/api/login', rateLimit({ max: 8, keyBy: req => req.body?.identity }), 
 // Montage des routes sur le préfixe /api
 app.use('/api', dashRoutes);
 
-// Route racine
+// La page d’accueil présente le site de téléchargement et permet d’ouvrir la connexion.
 app.get('/', (req, res) => {
-  res.sendFile(path.join(__dirname, '../front/html/index.html'));
+  res.sendFile(path.join(__dirname, '../front/html/download.html'));
 });
 
 // Rendre le dossier 'img' accessible publiquement via l'URL /img

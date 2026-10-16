@@ -1,22 +1,6 @@
 const crypto = require('crypto');
 const db = require('./db');
 
-let ready;
-async function ensureMovementTable() {
-  if (!ready) ready = db.query(`CREATE TABLE IF NOT EXISTS material_movement_logs (
-    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
-    material_name VARCHAR(160) NOT NULL,
-    movement_type ENUM('entry','exit','transfer','adjustment','maintenance','other') NOT NULL,
-    quantity DECIMAL(12,2) NOT NULL DEFAULT 0,
-    source_location VARCHAR(160) NULL,
-    destination_location VARCHAR(160) NULL,
-    details TEXT NULL,
-    actor_id VARCHAR(36) NULL,
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    KEY idx_material_movement_created (created_at)
-  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`).catch(error=>{ready=null;throw error;});
-  return ready;
-}
 let reviewsReady;
 async function ensureReviewsTable(){
   if(!reviewsReady)reviewsReady=db.query(`CREATE TABLE IF NOT EXISTS big_manager_reviews(
@@ -52,12 +36,7 @@ exports.getOverview = async (req,res,next) => {
       target.id AS targetId,target.last_name AS targetName,target.username AS targetUsername,target.role AS targetRole,
       author.last_name AS reviewerName FROM big_manager_reviews r JOIN users target ON target.id=r.target_user_id
       JOIN users author ON author.id=r.reviewer_id ORDER BY r.created_at DESC,r.id DESC LIMIT 500`);
-    await ensureMovementTable();
-    const [movements] = await db.query(`SELECT m.id,m.material_name AS materialName,m.movement_type AS movementType,m.quantity,
-      m.source_location AS sourceLocation,m.destination_location AS destinationLocation,m.details,
-      m.created_at AS createdAt,u.last_name AS actorName FROM material_movement_logs m
-      LEFT JOIN users u ON u.id=m.actor_id ORDER BY m.created_at DESC,m.id DESC LIMIT 500`);
-    return res.json({success:true,activities:rows,ratings,managers,people,reviews,movements});
+    return res.json({success:true,activities:rows,ratings,managers,people,reviews});
   } catch(error){next(error);}
 };
 
@@ -149,29 +128,5 @@ exports.rateManager = async (req,res,next) => {
       VALUES(?,?,?,?,?,?) ON DUPLICATE KEY UPDATE rating=VALUES(rating),comment=VALUES(comment),updated_at=CURRENT_TIMESTAMP`,
       [id,managerId,req.user.id,date,Number(rating),String(comment).trim()]);
     return res.json({success:true,message:'Notation journalière enregistrée.'});
-  } catch(error){next(error);}
-};
-
-exports.createMovement = async (req,res,next) => {
-  try {
-    const {materialName,movementType,quantity,sourceLocation,destinationLocation,details}=req.body||{};
-    const types=['entry','exit','transfer','adjustment','maintenance','other'];
-    if(!String(materialName||'').trim()||String(materialName).length>160||!types.includes(movementType)||!Number.isFinite(Number(quantity))||String(details||'').length>3000)
-      return res.status(400).json({success:false,message:'Vérifiez le matériel, le type de mouvement et la quantité.'});
-    await ensureMovementTable();
-    const [result]=await db.query(`INSERT INTO material_movement_logs(material_name,movement_type,quantity,source_location,destination_location,details,actor_id)
-      VALUES(?,?,?,?,?,?,?)`,[String(materialName).trim(),movementType,Number(quantity),String(sourceLocation||'').slice(0,160)||null,String(destinationLocation||'').slice(0,160)||null,String(details||'').trim()||null,req.user.id]);
-    return res.status(201).json({success:true,id:result.insertId});
-  } catch(error){next(error);}
-};
-
-exports.listMovements = async (req,res,next) => {
-  try {
-    await ensureMovementTable();
-    const [rows]=await db.query(`SELECT m.id,m.material_name AS materialName,m.movement_type AS movementType,m.quantity,
-      m.source_location AS sourceLocation,m.destination_location AS destinationLocation,m.details,m.created_at AS createdAt,
-      u.last_name AS actorName,u.username FROM material_movement_logs m LEFT JOIN users u ON u.id=m.actor_id
-      ORDER BY m.created_at DESC,m.id DESC LIMIT 500`);
-    return res.json({success:true,movements:rows});
   } catch(error){next(error);}
 };
