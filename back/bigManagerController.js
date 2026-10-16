@@ -27,9 +27,9 @@ exports.getOverview = async (req,res,next) => {
     const [ratings] = await db.query(`SELECT n.id,n.agent_id AS managerId,n.evaluation_date AS date,n.rating,n.comment,
       target.last_name AS managerName,target.username AS managerUsername,reviewer.last_name AS reviewerName
       FROM notation n JOIN users target ON target.id=n.agent_id JOIN users reviewer ON reviewer.id=n.manager_id
-      WHERE LOWER(TRIM(target.role)) IN ('manager','chef_service','chef_de_service','chef')
+      WHERE LOWER(TRIM(target.role))='manager'
       ORDER BY n.evaluation_date DESC,n.updated_at DESC LIMIT 1000`);
-    const [managers] = await db.query("SELECT id,last_name AS fullName,username,department FROM users WHERE is_active=1 AND LOWER(TRIM(role)) IN ('manager','chef_service','chef_de_service','chef') ORDER BY last_name");
+    const [managers] = await db.query("SELECT id,last_name AS fullName,username,department FROM users WHERE is_active=1 AND LOWER(TRIM(role))='manager' ORDER BY last_name");
     const [people] = await db.query("SELECT id,last_name AS fullName,username,role,department FROM users WHERE is_active=1 AND LOWER(TRIM(role)) IN ('agent','manager','chef_service','chef_de_service','chef') ORDER BY last_name");
     await ensureReviewsTable();
     const [reviews] = await db.query(`SELECT r.id,r.review_text AS reviewText,r.created_at AS createdAt,
@@ -121,7 +121,7 @@ exports.rateManager = async (req,res,next) => {
     const { managerId, date, rating, comment='' } = req.body || {};
     if (!managerId || !/^\d{4}-\d{2}-\d{2}$/.test(String(date||'')) || !Number.isInteger(Number(rating)) || Number(rating)<1 || Number(rating)>5 || String(comment).length>2000)
       return res.status(400).json({success:false,message:'Fournissez un manager, une date, une note de 1 à 5 et un avis de 2 000 caractères maximum.'});
-    const [target] = await db.query("SELECT id FROM users WHERE id=? AND is_active=1 AND LOWER(TRIM(role)) IN ('manager','chef_service','chef_de_service','chef')",[managerId]);
+    const [target] = await db.query("SELECT id FROM users WHERE id=? AND is_active=1 AND LOWER(TRIM(role))='manager'",[managerId]);
     if (!target.length) return res.status(404).json({success:false,message:'Manager actif introuvable.'});
     const id=crypto.randomUUID();
     await db.query(`INSERT INTO notation(id,agent_id,manager_id,evaluation_date,rating,comment)
