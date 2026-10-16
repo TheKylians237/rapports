@@ -7,6 +7,7 @@ const dashesController = require('./dashesController');
 const adminController = require('./adminController');
 const rateLimit = require('./rateLimit');
 const bigManagerController = require('./bigManagerController');
+const notificationsController = require('./notificationsController');
 const activityAudit = require('./activityAudit');
 const loginLimit = rateLimit({ max: 8, scope: 'login', keyBy: req => req.body?.identity });
 const otpLimit = rateLimit({ max: 8, scope: 'otp', keyBy: req => req.body?.userId || req.body?.preAuthToken });
@@ -52,6 +53,11 @@ router.get('/agent/activities', protect, restrictTo('agent'), dashesController.g
 router.get('/agent/my-evaluations', protect, restrictTo('agent'), dashesController.getMyAgentEvaluations);
 router.get('/agent-stats', protect, restrictTo('agent'), dashesController.getAgentStats);
 router.post('/save-task', protect, restrictTo('agent'), dashesController.saveTask);
+
+// Notifications in-app (cloche + panneau) — accessibles à tous les rôles authentifiés.
+router.get('/notifications', protect, notificationsController.listNotifications);
+router.patch('/notifications/read-all', protect, notificationsController.markAllNotificationsRead);
+router.patch('/notifications/:id/read', protect, notificationsController.markNotificationRead);
 
 // Gestion du Profil & Mot de passe
 router.get('/getprofile', protect, dashesController.getProfile);

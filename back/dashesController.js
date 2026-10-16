@@ -4,6 +4,7 @@ const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs');
 const { isValidPassword, PASSWORD_MIN_LENGTH } = require('./validators');
+const notifications = require('./notificationsController');
 
 
 
@@ -191,6 +192,12 @@ exports.storeReport = async (req, res) => {
     }
     const totalHours = normalizedActivities.reduce((sum, a) => sum + a.hours, 0);
     const reportId = await createCanonicalDailyReport({ userId, submittedTo: recipientId, reportDate, totalHours, comments, nextDayTargets, activities: normalizedActivities });
+    await notifications.createNotification(recipientId, {
+      title: 'Nouveau rapport à valider',
+      body: `Un agent a soumis un rapport du ${reportDate}.`,
+      type: 'report_submitted',
+      link: '/html/chef_service_dashboard.html',
+    });
     return res.status(201).json({ success: true, message: 'Rapport et activités soumis avec succès.', report_id: reportId, reportId });
   } catch (error) {
     console.error('Erreur lors de l’enregistrement du rapport journalier :', error);
@@ -367,6 +374,9 @@ exports.decideChefServiceReportIssue = async (req, res, next) => {
           AND LOWER(TRIM(ri.status)) = 'pending'`,
       [decision === 'approved' ? 'Approved' : 'Rejected', req.user.id, reviewComment || null, issueId, department]
     );
+    if (result.affectedRows) {
+      await notifications.notifyIssueDecision(issueId, decision, reviewComment);
+    }
     if (!result.affectedRows) {
       return res.status(409).json({ success: false, message: 'Proposition introuvable ou déjà traitée dans votre département.' });
     }
@@ -2184,6 +2194,9 @@ exports.decideChefServiceActivity = async (req, res, next) => {
           AND (dr.submitted_to = ? OR dr.submitted_to IS NULL)`,
       [decision, req.user.id, decision === 'rejected' ? reason : null, activityId, department, req.user.id]
     );
+    if (result.affectedRows) {
+      await notifications.notifyReportDecision(activityId, decision, reason);
+    }
     if (!result.affectedRows) {
       return res.status(409).json({ success: false, message: 'Cette activité n’est plus en attente ou ne relève pas de votre département.' });
     }
