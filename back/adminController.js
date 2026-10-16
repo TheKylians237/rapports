@@ -4,6 +4,7 @@ const db = require('./db');
 const appSettings = require('./appSettings');
 const { sendAccountCredentials } = require('./mailer');
 const activityAudit = require('./activityAudit');
+const { isValidEmail, isValidPassword, PASSWORD_MIN_LENGTH } = require('./validators');
 
 let schemaReady;
 async function ensureAdminSchema() {
@@ -163,8 +164,8 @@ exports.createUser = async (req, res, next) => {
     const role = String(body.role || 'agent').trim().toLowerCase();
     const department = String(body.department || '').trim().slice(0, 100);
     const password = String(body.password || '');
-    if (!fullName || !username || !/^\S+@\S+\.\S+$/.test(email) || !department || !validRoles.includes(role) || password.length < 10) {
-      return res.status(400).json({ success:false, message:'Renseignez le nom, le nom utilisateur, un e-mail valide, le département, le rôle et un mot de passe d’au moins 10 caractères.' });
+    if (!fullName || !username || !isValidEmail(email) || !department || !validRoles.includes(role) || !isValidPassword(password)) {
+      return res.status(400).json({ success:false, message:`Renseignez le nom, le nom utilisateur, un e-mail valide, le département, le rôle et un mot de passe d’au moins ${PASSWORD_MIN_LENGTH} caractères.` });
     }
     const [deptRows] = await db.query('SELECT id FROM departments WHERE id=? AND is_active=1', [department]);
     if (!deptRows.length) return res.status(400).json({ success:false, message:'Département introuvable ou inactif.' });
@@ -213,7 +214,7 @@ exports.updateUser = async (req, res, next) => {
     const department = String(body.department || '').trim().slice(0,100);
     const role = String(body.role || '').trim().toLowerCase();
     const jobTitle = String(body.jobTitle || '').trim().slice(0,100) || null;
-    if (!fullName || !username || !/^\S+@\S+\.\S+$/.test(email) || !department || !validRoles.includes(role)) {
+    if (!fullName || !username || !isValidEmail(email) || !department || !validRoles.includes(role)) {
       return res.status(400).json({ success:false,message:'Vérifiez les informations obligatoires et le rôle choisi.' });
     }
     if (req.user.id === id && role !== 'admin') return res.status(400).json({ success:false,message:'Vous ne pouvez pas retirer votre propre rôle administrateur.' });
@@ -262,7 +263,7 @@ exports.resetUserPassword = async(req,res,next)=>{
     await ensureAdminSchema();
     const id=String(req.params.userId||'');
     const password=String(req.body?.password||'');
-    if(password.length<10)return res.status(400).json({success:false,message:'Le mot de passe temporaire doit contenir au moins 10 caractères.'});
+    if(!isValidPassword(password))return res.status(400).json({success:false,message:`Le mot de passe temporaire doit contenir entre ${PASSWORD_MIN_LENGTH} et 200 caractères.`});
     const [target]=await db.query('SELECT id FROM users WHERE id=? LIMIT 1',[id]);
     if(!target.length)return res.status(404).json({success:false,message:'Utilisateur introuvable.'});
     const hash=await bcrypt.hash(password,10);

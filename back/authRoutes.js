@@ -8,10 +8,11 @@ const adminController = require('./adminController');
 const rateLimit = require('./rateLimit');
 const bigManagerController = require('./bigManagerController');
 const activityAudit = require('./activityAudit');
-const loginLimit = rateLimit({ max: 8, keyBy: req => req.body?.identity });
-const otpLimit = rateLimit({ max: 8, keyBy: req => req.body?.userId || req.body?.preAuthToken });
-const recoveryLimit = rateLimit({ max: 4, keyBy: req => req.body?.email || req.body?.userId });
+const loginLimit = rateLimit({ max: 8, scope: 'login', keyBy: req => req.body?.identity });
+const otpLimit = rateLimit({ max: 8, scope: 'otp', keyBy: req => req.body?.userId || req.body?.preAuthToken });
+const recoveryLimit = rateLimit({ max: 4, scope: 'password-recovery', keyBy: req => req.body?.email || req.body?.userId });
 const registrationLimit = rateLimit({ max: 25 });
+const publicConfigLimit = rateLimit({ max: 120 });
 
 // ============================================================================
 // 1. ROUTES PUBLIQUES (Non protégées)
@@ -19,8 +20,8 @@ const registrationLimit = rateLimit({ max: 25 });
 
 // Authentification de base & 2FA
 router.post('/register', registrationLimit, authController.register);
-router.get('/registration-status', authController.registrationStatus);
-router.get('/registration-options', authController.registrationOptions);
+router.get('/registration-status', publicConfigLimit, authController.registrationStatus);
+router.get('/registration-options', publicConfigLimit, authController.registrationOptions);
 router.post('/login', loginLimit, authController.login);
 router.post('/verify-2fa', otpLimit, authController.verify2FA);
 router.post('/resend-2fa', otpLimit, authController.resend2FA);
@@ -43,14 +44,14 @@ router.post('/2fa/setup', protect, authController.setup2FA);
 router.post('/2fa/enable', protect, authController.verifyAndEnable2FA);
 
 // Rapports & Soumissions Agent
-router.get('/reports', protect, dashesController.getDashboardData);
-router.post('/reports-store', protect, dashesController.storeReport);
+router.get('/reports', protect, restrictTo('agent'), dashesController.getDashboardData);
+router.post('/reports-store', protect, restrictTo('agent'), dashesController.storeReport);
 router.post('/report-issues', protect, restrictTo('agent'), dashesController.storeReportIssue);
 router.get('/agent/my-proposals', protect, restrictTo('agent'), dashesController.getMyReportIssues);
 router.get('/agent/activities', protect, restrictTo('agent'), dashesController.getAgentActivitiesForProposal);
 router.get('/agent/my-evaluations', protect, restrictTo('agent'), dashesController.getMyAgentEvaluations);
-router.get('/agent-stats', protect, dashesController.getAgentStats);
-router.post('/save-task', protect, dashesController.saveTask);
+router.get('/agent-stats', protect, restrictTo('agent'), dashesController.getAgentStats);
+router.post('/save-task', protect, restrictTo('agent'), dashesController.saveTask);
 
 // Gestion du Profil & Mot de passe
 router.get('/getprofile', protect, dashesController.getProfile);

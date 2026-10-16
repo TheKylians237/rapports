@@ -6,12 +6,22 @@ require('dotenv').config({ path: path.join(__dirname, '.env') });
 // 1. Correction des imports locaux avec './'
 const authRoutes = require('./authRoutes');
 const dashRoutes = require('./dashRoutes');
-const authController = require('./authController');
-const rateLimit = require('./rateLimit');
 const activityAudit = require('./activityAudit');
 const db = require('./db');
 
 const app = express();
+
+// Respecte les en-têtes X-Forwarded-* lorsqu'un reverse proxy (Nginx, IIS, ingress)
+// est placé devant l'application. Sans cela, req.ip (donc le rate limiting) ne
+// verrait que l'adresse du proxy.
+const trustProxy = process.env.TRUST_PROXY;
+if (trustProxy !== undefined && trustProxy !== '') {
+  const numeric = Number(trustProxy);
+  app.set(
+    'trust proxy',
+    trustProxy === 'true' ? true : trustProxy === 'false' ? false : Number.isNaN(numeric) ? trustProxy : numeric,
+  );
+}
 
 const configuredOrigins = (process.env.APP_ORIGINS || 'http://localhost:5000,http://127.0.0.1:5000')
   .split(',').map(origin => origin.trim()).filter(Boolean);
@@ -21,6 +31,9 @@ app.use((req, res, next) => {
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
   res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  res.setHeader('X-Permitted-Cross-Domain-Policies', 'none');
+  res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+  if (req.path.startsWith('/api/')) res.setHeader('Cache-Control', 'no-store');
   next();
 });
 app.use((req, res, next) => cors({ origin(origin, callback) {
@@ -36,11 +49,48 @@ app.use((req, res, next) => cors({ origin(origin, callback) {
 } })(req, res, next));
 app.use(express.json({ limit: '100kb' }));
 app.use(express.urlencoded({ extended: false, limit: '100kb' }));
+
+// Headers de sécurité (manuels, sans dépendance supplémentaire)
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('X-XSS-Protection', '0');
+  res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+  // Permissions-Policy minimal (limite certaines APIs)
+  res.setHeader(
+    'Permissions-Policy',
+    'geolocation=(), camera=(), microphone=(), payment=(), usb=(), magnetometer=(), gyroscope=(), accelerometer=()',
+  );
+  if (process.env.NODE_ENV === 'production' && req.protocol === 'https') {
+    res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains; preload');
+  }
+  next();
+});
+
+// Analyse minimale des cookies afin que l'authentification par cookie fonctionne
+// (en complément du jeton Bearer lu par authMiddleware).
+app.use((req, _res, next) => {
+  const jar = {};
+  const header = req.headers.cookie;
+  if (header) {
+    for (const part of header.split(';')) {
+      const separator = part.indexOf('=');
+      if (separator < 0) continue;
+      const key = part.slice(0, separator).trim();
+      if (!key) continue;
+      const rawValue = part.slice(separator + 1).trim();
+      try { jar[key] = decodeURIComponent(rawValue); } catch (_) { jar[key] = rawValue; }
+    }
+  }
+  req.cookies = jar;
+  next();
+});
+
 app.use(activityAudit.middleware);
 
-app.get('/api/health', async (_req, res) => {
-  try { await db.query('SELECT 1'); return res.json({ success: true, status: 'ready' }); }
-  catch (_) { return res.status(503).json({ success: false, status: 'starting', message: 'La base de données est momentanément indisponible.' }); }
+app.get('/api/health', (_req, res) => {
+  res.json({ status: 'ok', uptime: Math.round(process.uptime()) });
 });
 
 // Exposer tous les sous-dossiers de 'front'
@@ -51,10 +101,6 @@ app.use(express.static(path.join(__dirname, '../front/html'), { index: false }))
 
 // Charger les routes de l'API (ex: /api/auth/login, /api/auth/register, etc.)
 app.use('/api/auth', authRoutes);
-
-// Si vous voulez garder une route directe /api/login (conseillé d'utiliser POST pour du login)
-app.post('/api/login', rateLimit({ max: 8, keyBy: req => req.body?.identity }), authController.login);
-
 
 // Montage des routes sur le préfixe /api
 app.use('/api', dashRoutes);
@@ -76,6 +122,10 @@ app.use((err, req, res, next) => {
 
 const PORT = process.env.PORT || 5000;
 const HOST = process.env.HOST || '0.0.0.0';
-app.listen(PORT, HOST, () => {
-  console.log(`Serveur accessible sur http://${HOST}:${PORT} (localhost ou adresse IP du réseau local)`);
-});
+if (require.main === module) {
+  app.listen(PORT, HOST, () => {
+    console.log(`Serveur accessible sur http://${HOST}:${PORT} (localhost ou adresse IP du réseau local)`);
+  });
+}
+
+module.exports = app;

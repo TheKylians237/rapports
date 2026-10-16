@@ -3,6 +3,7 @@ const bcrypt = require('bcrypt'); // Assurez-vous d'avoir installé bcrypt / bcr
 const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs');
+const { isValidPassword, PASSWORD_MIN_LENGTH } = require('./validators');
 
 
 
@@ -196,8 +197,7 @@ exports.storeReport = async (req, res) => {
     const duplicate = error.code === 'ER_DUP_ENTRY';
     return res.status(duplicate ? 409 : 500).json({
       success: false,
-      message: duplicate ? 'Un rapport existe déjà pour cette date.' : 'Erreur serveur lors de la création du rapport.',
-      errorDetails: error.sqlMessage || error.message
+      message: duplicate ? 'Un rapport existe déjà pour cette date.' : 'Erreur serveur lors de la création du rapport.'
     });
   }
 };
@@ -586,10 +586,10 @@ exports.changePassword = async (req, res) => {
     const user_id = req.user?.id;
     const { currentPassword, newPassword } = req.body;
 
-    if (!user_id || !currentPassword || typeof newPassword !== 'string' || newPassword.length < 12 || newPassword.length > 200) {
+    if (!user_id || !currentPassword || !isValidPassword(newPassword)) {
       return res.status(400).json({
         success: false,
-        message: 'Tous les champs sont obligatoires.'
+        message: `Tous les champs sont obligatoires et le nouveau mot de passe doit contenir au moins ${PASSWORD_MIN_LENGTH} caractères.`
       });
     }
 
@@ -896,8 +896,7 @@ exports.get_dashboard_stats = async (req, res) => {
   } catch (error) {
     console.error('Erreur SQL dans get_dashboard_stats :', error);
     return res.status(500).json({ 
-      error: 'Erreur serveur lors de la récupération des données.',
-      details: error.message 
+      error: 'Erreur serveur lors de la récupération des données.'
     });
   }
 };

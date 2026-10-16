@@ -1,11 +1,12 @@
 const buckets = new Map();
 const crypto = require('crypto');
 
-function rateLimit({ windowMs = 15 * 60 * 1000, max = 10, keyBy } = {}) {
+function rateLimit({ windowMs = 15 * 60 * 1000, max = 10, keyBy, scope } = {}) {
   return (req, res, next) => {
     const identity = typeof keyBy === 'function' ? String(keyBy(req) || '').trim().toLowerCase().slice(0,120) : '';
     const identityKey = identity ? crypto.createHash('sha256').update(identity).digest('hex') : '';
-    const key = `${req.baseUrl}${req.path}:${req.ip || req.socket.remoteAddress}:${identityKey}`;
+    const bucketScope = scope || `${req.baseUrl}${req.path}`;
+    const key = `${bucketScope}:${req.ip || req.socket.remoteAddress}:${identityKey}`;
     const now = Date.now();
     let bucket = buckets.get(key);
     if (!bucket || bucket.until <= now) bucket = { count: 0, until: now + windowMs };

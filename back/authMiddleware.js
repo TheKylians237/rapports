@@ -32,7 +32,7 @@ const protect = async (req, res, next) => {
     }
 
     // Validation JWT
-    const decoded = jwt.verify(token, JWT_SECRET);
+    const decoded = jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] });
 
     // Bloquer les jetons temporaires 2FA sur les routes métier
     if (decoded.isTemp2FA) {

@@ -10,6 +10,8 @@ const db = require('./db'); // Remplacez par le chemin vers votre fichier de con
 const { send2FACode } = require('./mailer');
 const appSettings = require('./appSettings');
 const JWT_SECRET = require('./jwtConfig');
+const hashRecoveryCode = code => crypto.createHmac('sha256', JWT_SECRET).update(String(code)).digest('hex');
+const { isValidEmail, isValidPassword } = require('./validators');
 
 // ==========================================
 // 1. INSCRIPTION & CONNEXION
@@ -29,7 +31,6 @@ const isStrongPassword = (password) => {
 
 exports.register = async (req, res) => {
   try {
-    await require('./adminController').ensureReferenceSchema();
     if (!(await appSettings.getRegistrationOpen())) return res.status(403).json({ success: false, message: 'La création de comptes est temporairement désactivée par l’administrateur.' });
     const { fullName, email, username, phone, department, role, password } = req.body;
     const departmentId = String(department || '').trim();
@@ -37,8 +38,8 @@ exports.register = async (req, res) => {
 
     // 1. Contrôle des champs obligatoires
     if (!fullName || !email || !username || !password || !departmentId || !['agent','manager','chef_service'].includes(roleId) ||
-        typeof password !== 'string' || password.length < 12 || password.length > 200 ||
-        !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email)) ||
+        !isValidPassword(password) ||
+        !isValidEmail(email) ||
         String(username).trim().length > 50 || String(fullName).trim().length > 50 ||
         departmentId.length > 100) {
       return res.status(400).json({ 
@@ -109,7 +110,6 @@ exports.register = async (req, res) => {
 
 exports.registrationOptions = async (_req,res) => {
   try {
-    await require('./adminController').ensureReferenceSchema();
     const [departments] = await pool.query('SELECT id,name FROM departments WHERE is_active=1 ORDER BY name');
     const [roles] = await pool.query("SELECT id,name FROM roles WHERE is_active=1 AND id IN ('agent','manager','chef_service') ORDER BY CASE id WHEN 'agent' THEN 1 ELSE 2 END");
     return res.json({success:true,departments,roles});
@@ -125,9 +125,10 @@ exports.registrationStatus = async (_req,res) => {
 };
 
 exports.login = async (req, res) => {
-    const { identity, password, rememberMe } = req.body;
+    const { identity, password, rememberMe } = req.body || {};
 
-    if (!identity || !password) {
+    if (typeof identity !== 'string' || !identity.trim() || identity.length > 254 ||
+        typeof password !== 'string' || !password || password.length > 200) {
         return res.status(400).json({ 
             success: false, 
             message: "L'identifiant et le mot de passe sont requis." 
@@ -136,8 +137,9 @@ exports.login = async (req, res) => {
 
     try {
         // 1. Recherche de l'utilisateur
-        const sql = 'SELECT * FROM users WHERE username = ? OR email = ? LIMIT 1';
-        const [rows] = await db.execute(sql, [identity, identity]);
+        const sql = 'SELECT id, username, email, password_hash, is_active FROM users WHERE username = ? OR email = ? LIMIT 1';
+        const normalizedIdentity = identity.trim();
+        const [rows] = await db.execute(sql, [normalizedIdentity, normalizedIdentity]);
 
         if (rows.length === 0) {
             return res.status(401).json({ 
@@ -163,11 +165,12 @@ exports.login = async (req, res) => {
 
         // 3. Génération du code 2FA (10 min)
     const otpCode = crypto.randomInt(100000, 1000000).toString();
+    const otpHash = hashRecoveryCode(otpCode);
         const otpExpiresAt = new Date(Date.now() + 10 * 60 * 1000);
 
         // 4. Enregistrement en BDD
         const updateSql = 'UPDATE users SET two_factor_code = ?, two_factor_expires = ? WHERE id = ?';
-        await db.execute(updateSql, [otpCode, otpExpiresAt, user.id]);
+        await db.execute(updateSql, [otpHash, otpExpiresAt, user.id]);
 
         // 5. Envoi de l'e-mail
         await send2FACode(user.email, otpCode);
@@ -252,7 +255,7 @@ exports.verifyAndEnable2FA = async (req, res) => {
 
     await pool.query(
       'UPDATE users SET is_2fa_enabled = 1, backup_codes = ? WHERE id = ?',
-      [JSON.stringify(backupCodes), userId]
+      [JSON.stringify(backupCodes.map(hashRecoveryCode)), userId]
     );
 
     res.json({ message: '2FA activé avec succès.', backupCodes, username: user.username });
@@ -273,7 +276,7 @@ exports.validate2FA = async (req, res) => {
       return res.status(400).json({ message: 'Session invalide.' });
     }
 
-    const [users] = await pool.query('SELECT * FROM users WHERE id = ? AND is_active = 1 LIMIT 1', [decoded.id]);
+    const [users] = await pool.query('SELECT id, username, email, role, is_2fa_enabled, two_factor_secret, backup_codes FROM users WHERE id = ? AND is_active = 1 LIMIT 1', [decoded.id]);
     if (!users.length) return res.status(401).json({ message: 'Compte inactif ou introuvable.' });
     const user = users[0];
     if (!user.is_2fa_enabled || !user.two_factor_secret) {
@@ -288,15 +291,20 @@ exports.validate2FA = async (req, res) => {
       backupCodes = user.backup_codes ? JSON.parse(user.backup_codes) : [];
     } catch (_) {}
     if (!Array.isArray(backupCodes)) backupCodes = [];
-    const isBackupMatch = backupCodes.includes(normalizedCode);
 
-    if (!isValidTOTP && !isBackupMatch) {
+    // Les codes de secours sont stockés hachés ; on tolère l'ancien format en clair.
+    const codeHash = hashRecoveryCode(normalizedCode);
+    let matchedBackup = null;
+    if (backupCodes.includes(codeHash)) matchedBackup = codeHash;
+    else if (backupCodes.includes(normalizedCode)) matchedBackup = normalizedCode;
+
+    if (!isValidTOTP && !matchedBackup) {
       return res.status(401).json({ message: 'Code 2FA invalide.' });
     }
 
     // Si code de secours utilisé, le supprimer de la liste
-    if (isBackupMatch) {
-      backupCodes = backupCodes.filter(c => c !== normalizedCode);
+    if (matchedBackup) {
+      backupCodes = backupCodes.filter(c => c !== matchedBackup);
       await pool.query('UPDATE users SET backup_codes = ? WHERE id = ?', [JSON.stringify(backupCodes), user.id]);
     }
 
@@ -318,17 +326,19 @@ exports.validate2FA = async (req, res) => {
 };
 
 exports.verify2FA = async (req, res) => {
-    const { userId, code } = req.body;
+    const userId = String(req.body?.userId || '').trim();
+    const code = String(req.body?.code || '').trim();
 
-    if (!userId || !code) {
+    if (!userId || !/^\d{6}$/.test(code)) {
         return res.status(400).json({ success: false, message: "Données incomplètes." });
     }
 
     try {
         // Vérification de l'utilisateur, du code et de l'expiration
+        const codeHash = hashRecoveryCode(code);
         const [rows] = await db.execute(
-            'SELECT * FROM users WHERE id = ? AND two_factor_code = ? AND two_factor_expires > NOW() LIMIT 1',
-            [userId, code]
+            'SELECT id, username, role, is_active FROM users WHERE id = ? AND is_active = 1 AND two_factor_code = ? AND two_factor_expires > NOW() LIMIT 1',
+            [userId, codeHash]
         );
 
         if (rows.length === 0) {
@@ -338,7 +348,7 @@ exports.verify2FA = async (req, res) => {
         const user = rows[0];
 
         // Consommer l’OTP atomiquement : une même vérification concurrente ne peut pas émettre deux sessions.
-        const [consumed] = await db.execute('UPDATE users SET two_factor_code = NULL, two_factor_expires = NULL WHERE id = ? AND two_factor_code = ? AND two_factor_expires > NOW()', [user.id, code]);
+        const [consumed] = await db.execute('UPDATE users SET two_factor_code = NULL, two_factor_expires = NULL WHERE id = ? AND two_factor_code = ? AND two_factor_expires > NOW()', [user.id, codeHash]);
         if (!consumed.affectedRows) return res.status(401).json({ success: false, message: 'Code OTP déjà utilisé ou expiré.' });
 
         // Génération du Token JWT définitif avec le RÔLE
@@ -378,7 +388,7 @@ exports.resend2FA = async (req, res) => {
 
     const code = crypto.randomInt(100000, 1000000).toString();
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
-    await db.execute('UPDATE users SET two_factor_code = ?, two_factor_expires = ? WHERE id = ?', [code, expiresAt, userId]);
+    await db.execute('UPDATE users SET two_factor_code = ?, two_factor_expires = ? WHERE id = ?', [hashRecoveryCode(code), expiresAt, userId]);
     await send2FACode(rows[0].email, code);
     return res.json({ success: true, message: 'Un nouveau code de vérification a été envoyé.' });
   } catch (error) {
@@ -397,7 +407,7 @@ exports.resend2FA = async (req, res) => {
 exports.forgotPassword = async (req, res) => {
   try {
     const email = String(req.body.email || '').trim().toLowerCase();
-    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    if (!isValidEmail(email)) {
       return res.status(200).json({ message: "Si l'adresse existe, un code a été envoyé." });
     }
     // 1. Vérification de l'utilisateur
@@ -416,7 +426,7 @@ exports.forgotPassword = async (req, res) => {
     await pool.query('DELETE FROM password_resets WHERE email = ?', [email]);
     await pool.query(
       'INSERT INTO password_resets (user_id, email, otp_code, expires_at) VALUES (?, ?, ?, ?)',
-      [userId, email, otp, expiresAt]
+      [userId, email, hashRecoveryCode(otp), expiresAt]
     );
 
     // 4. Envoi de l'e-mail
@@ -439,14 +449,14 @@ exports.resetPassword = async (req, res) => {
     const email = String(req.body.email || '').trim().toLowerCase();
     const code = String(req.body.code || '').trim();
     const { newPassword } = req.body;
-    if (!email || !/^\d{6}$/.test(code) || typeof newPassword !== 'string' || newPassword.length < 12 || newPassword.length > 200) {
+    if (!email || !/^\d{6}$/.test(code) || !isValidPassword(newPassword)) {
       return res.status(400).json({ message: 'Code invalide ou mot de passe trop faible.' });
     }
     connection = await pool.getConnection();
     await connection.beginTransaction();
     const [resetRows] = await connection.query(
       'SELECT user_id, expires_at FROM password_resets WHERE email = ? AND otp_code = ? ORDER BY created_at DESC LIMIT 1 FOR UPDATE',
-      [email, code]
+      [email, hashRecoveryCode(code)]
     );
     if (!resetRows.length || new Date(resetRows[0].expires_at) < new Date()) {
       await connection.rollback();
@@ -475,7 +485,7 @@ exports.resetPassword = async (req, res) => {
 exports.resetOTP = async (req, res) => {
   try {
     const email = String(req.body.email || '').trim().toLowerCase();
-    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    if (!isValidEmail(email)) {
       return res.status(200).json({ message: "Si l'adresse existe, un code a été envoyé." });
     }
 
@@ -497,7 +507,7 @@ exports.resetOTP = async (req, res) => {
     // 4. INSÉRER le nouveau code
     await pool.query(
       'INSERT INTO password_resets (user_id, email, otp_code, expires_at) VALUES (?, ?, ?, ?)',
-      [userId, email, otp, expiresAt]
+      [userId, email, hashRecoveryCode(otp), expiresAt]
     );
 
     // 5. Envoyer l'email
@@ -513,10 +523,11 @@ exports.resetOTP = async (req, res) => {
 
 exports.verifyOTP = async (req, res) => {
   try {
-    const { email, otp } = req.body;
+    const email = String(req.body?.email || '').trim().toLowerCase();
+    const otp = String(req.body?.otp || '').trim();
 
     // 1. Validation basique des entrées
-    if (!email || !otp) {
+    if (!email || !/^\d{6}$/.test(otp)) {
       return res.status(400).json({ 
         message: "L'adresse e-mail et le code OTP sont requis." 
       });
@@ -527,7 +538,7 @@ exports.verifyOTP = async (req, res) => {
       `SELECT * FROM password_resets 
        WHERE email = ? AND otp_code = ? 
        ORDER BY created_at DESC LIMIT 1`,
-      [email, otp]
+      [email, hashRecoveryCode(otp)]
     );
 
     // Si aucun enregistrement ne correspond au couple email + otp

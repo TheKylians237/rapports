@@ -12,7 +12,8 @@ async function ensureSettings() {
   return ready;
 }
 async function getRegistrationOpen() {
-  await ensureSettings();
+  // Public registration status is read-only. Schema creation belongs to the
+  // authenticated admin path or to the installation migration.
   const [rows] = await db.query("SELECT setting_value FROM app_settings WHERE setting_key='registration_open'");
   return rows[0]?.setting_value === '1';
 }
