@@ -2,8 +2,8 @@ const mysql = require('mysql2');
 const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, '.env') });
 
-if (!process.env.DB_PASSWORD) {
-  throw new Error('DB_PASSWORD est manquant dans back/.env. Ajoutez le mot de passe MySQL avant de démarrer le serveur.');
+if (!process.env.DB_PASSWORD?.trim()) {
+  throw new Error('DB_PASSWORD est absent ou vide dans back/.env. Renseignez le mot de passe MySQL après le signe =.');
 }
 
 const pool = mysql.createPool({
