@@ -12,6 +12,7 @@ const pool = mysql.createPool({
   user: process.env.DB_USER || 'rprts_app',
   password: process.env.DB_PASSWORD || '',
   database: process.env.DB_NAME || 'rprts',
+  charset: 'UTF8MB4_GENERAL_CI',
   waitForConnections: true,
   connectionLimit: 10,
   queueLimit: 0,

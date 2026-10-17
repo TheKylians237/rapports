@@ -6,7 +6,7 @@ async function ensureSettings() {
     setting_value VARCHAR(255) NOT NULL,
     updated_by VARCHAR(36) NULL,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`).then(() => db.query(
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci`).then(() => db.query(
     "INSERT IGNORE INTO app_settings(setting_key,setting_value) VALUES ('registration_open','1')"
   )).catch(error => { ready = null; throw error; });
   return ready;

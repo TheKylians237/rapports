@@ -11,6 +11,7 @@ function retentionDays() {
 async function purgeExpiredSecrets() {
   await db.query('DELETE FROM password_resets WHERE expires_at <= NOW()');
   await db.query('UPDATE users SET two_factor_code=NULL, two_factor_expires=NULL WHERE two_factor_expires <= NOW()');
+  await db.query('DELETE FROM user_sessions WHERE expires_at < DATE_SUB(NOW(), INTERVAL 30 DAY) OR revoked_at < DATE_SUB(NOW(), INTERVAL 30 DAY)');
 }
 
 async function purgeOldAuditLogs() {

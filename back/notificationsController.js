@@ -36,11 +36,25 @@ async function createNotification(userId, { title, body = '', type = 'info', lin
         link ? String(link).slice(0, MAX_LINK) : null,
       ],
     );
+    sendBrowserPush(id,{title:safeTitle,body:String(body||'').slice(0,MAX_BODY),link:link?String(link).slice(0,MAX_LINK):null}).catch(()=>{});
     return true;
   } catch (error) {
     console.error('createNotification:', error.message);
     return false;
   }
+}
+
+async function sendBrowserPush(userId,payload){
+  if(!process.env.VAPID_PUBLIC_KEY||!process.env.VAPID_PRIVATE_KEY||!process.env.VAPID_SUBJECT)return;
+  try {
+    const webPush=require('web-push');
+    webPush.setVapidDetails(process.env.VAPID_SUBJECT,process.env.VAPID_PUBLIC_KEY,process.env.VAPID_PRIVATE_KEY);
+    const [subs]=await db.query('SELECT id,endpoint,p256dh,auth_secret FROM push_subscriptions WHERE user_id=?',[userId]);
+    await Promise.allSettled(subs.map(async sub=>{
+      try { await webPush.sendNotification({endpoint:sub.endpoint,keys:{p256dh:sub.p256dh,auth:sub.auth_secret}},JSON.stringify(payload),{TTL:86400}); }
+      catch(error){ if(error.statusCode===404||error.statusCode===410)await db.query('DELETE FROM push_subscriptions WHERE id=?',[sub.id]); }
+    }));
+  } catch(error){console.error('Envoi Web Push indisponible:',error.message);}
 }
 
 // GET /api/auth/notifications

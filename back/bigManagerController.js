@@ -11,7 +11,7 @@ async function ensureReviewsTable(){
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     KEY idx_big_review_target_time(target_user_id,created_at),
     KEY idx_big_review_reviewer_time(reviewer_id,created_at)
-  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`).catch(error=>{reviewsReady=null;throw error;});
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci`).catch(error=>{reviewsReady=null;throw error;});
   return reviewsReady;
 }
 

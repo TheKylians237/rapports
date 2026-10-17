@@ -5,6 +5,7 @@ const path = require('path');
 const fs = require('fs');
 const { isValidPassword, isValidIsoDate, PASSWORD_MIN_LENGTH } = require('./validators');
 const notifications = require('./notificationsController');
+const webhookService = require('./webhookService');
 
 
 
@@ -339,6 +340,7 @@ exports.storeReport = async (req, res) => {
     }
     const totalHours = normalizedActivities.reduce((sum, a) => sum + a.hours, 0);
     const reportId = await createCanonicalDailyReport({ userId, submittedTo: recipientId, reportDate, totalHours, comments, nextDayTargets, activities: normalizedActivities, clientSubmissionId });
+    webhookService.dispatchEvent(userId,'report.submitted',{reportId,reportDate,totalHours,activityCount:normalizedActivities.length}).catch(()=>{});
     await notifications.createNotification(recipientId, {
       title: 'Nouveau rapport à valider',
       body: `Un agent a soumis un rapport du ${reportDate}.`,
@@ -913,7 +915,7 @@ exports.loadAvatar = async (req, res) => {
     const user = rows[0];
 
     // Valeur par défaut si aucun avatar n'est enregistré en BDD
-    const defaultAvatar = 'https://api.dicebear.com/7.x/bottts/svg?seed=Agent';
+    const defaultAvatar = '/img/avatar-default.svg';
 
     return res.status(200).json({
       success: true,
@@ -1417,10 +1419,11 @@ exports.getChefServiceDashboard = async (req, res, next) => {
     }
 
     // Le JWT de connexion ne contient que id, role et email : relire le service en base.
+    const principalId = tokenUser.delegatedPrincipalId || tokenUser.id;
     const [currentUsers] = await db.query(
       `SELECT id, last_name AS lastName, username, department, role, job_title AS jobTitle, is_active AS isActive
          FROM users WHERE id = ? LIMIT 1`,
-      [tokenUser.id]
+      [principalId]
     );
     const user = currentUsers[0];
     const role = String(user?.role || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
@@ -1469,7 +1472,7 @@ exports.getChefServiceDashboard = async (req, res, next) => {
           AND LOWER(dr.status) = 'submitted'
           AND (dr.submitted_to = ? OR dr.submitted_to IS NULL)
         ORDER BY dr.report_date DESC, dr.created_at DESC LIMIT 30`,
-      [department, start, end, req.user.id]
+      [department, start, end, req.user.delegatedPrincipalId || req.user.id]
     );
 
     // 2. Totaux des rapports
@@ -1481,7 +1484,7 @@ exports.getChefServiceDashboard = async (req, res, next) => {
          FROM daily_reports dr 
          JOIN users u ON u.id = dr.user_id
         WHERE u.department = ? AND dr.report_date >= ? AND dr.report_date < ?`,
-      [req.user.id, department, start, end]
+      [req.user.delegatedPrincipalId || req.user.id, department, start, end]
     );
 
     // 3. Équipe et rapports en attente
@@ -1495,7 +1498,7 @@ exports.getChefServiceDashboard = async (req, res, next) => {
         WHERE u.department = ? AND u.is_active = 1 AND LOWER(TRIM(u.role)) = 'agent'
         GROUP BY u.id, u.last_name, u.username, u.job_title 
         ORDER BY u.last_name, u.username`,
-      [req.user.id, start, end, department]
+      [req.user.delegatedPrincipalId || req.user.id, start, end, department]
     );
 
     // 4. Activités récentes
@@ -1624,7 +1627,7 @@ exports.getChefServiceAgentDetails = async (req, res, next) => {
     }
 
     const [chefRows] = await db.query(
-      `SELECT department, role, is_active AS isActive FROM users WHERE id = ? LIMIT 1`, [req.user.id]
+      `SELECT department, role, is_active AS isActive FROM users WHERE id = ? LIMIT 1`, [req.user.delegatedPrincipalId || req.user.id]
     );
     const chef = chefRows[0];
     const chefRole = String(chef?.role || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
@@ -1649,7 +1652,7 @@ exports.getChefServiceAgentDetails = async (req, res, next) => {
                         AND (submitted_to = ? OR submitted_to IS NULL) THEN 1 ELSE 0 END) AS pendingReports,
               SUM(CASE WHEN LOWER(status) IN ('validated','approved') THEN 1 ELSE 0 END) AS validatedReports,
               MAX(report_date) AS lastReportDate
-         FROM daily_reports WHERE user_id = ?`, [req.user.id, agent.id]
+         FROM daily_reports WHERE user_id = ?`, [req.user.delegatedPrincipalId || req.user.id, agent.id]
     );
     const [issueRows] = await db.query(
       `SELECT COUNT(*) AS totalIssues,
@@ -2027,7 +2030,7 @@ exports.getDepartmentColleagues = async (req, res, next) => {
 
 const getChefServiceDepartment = async (req) => {
   const [rows] = await db.query(
-    `SELECT department, role, is_active AS isActive FROM users WHERE id = ? LIMIT 1`, [req.user?.id]
+    `SELECT department, role, is_active AS isActive FROM users WHERE id = ? LIMIT 1`, [req.user?.delegatedPrincipalId || req.user?.id]
   );
   const chef = rows[0];
   const role = String(chef?.role || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
@@ -2215,7 +2218,7 @@ exports.getChefServiceActivities = async (req, res, next) => {
     const params = [department];
     if (status === 'approval_pending') {
       conditions.push("LOWER(TRIM(dr.status)) = 'submitted' AND (dr.submitted_to = ? OR dr.submitted_to IS NULL)");
-      params.push(req.user.id);
+      params.push(req.user.delegatedPrincipalId || req.user.id);
     } else if (status) { conditions.push('ra.status = ?'); params.push(status); }
     if (category) { conditions.push('ra.category = ?'); params.push(category); }
     if (search) {
@@ -2240,7 +2243,7 @@ exports.getChefServiceActivities = async (req, res, next) => {
         WHERE u.department = ? AND LOWER(TRIM(u.role)) = 'agent'
           AND LOWER(TRIM(dr.status)) = 'submitted'
           AND (dr.submitted_to = ? OR dr.submitted_to IS NULL)`,
-      [department, req.user.id]
+      [department, req.user.delegatedPrincipalId || req.user.id]
     );
     const [rows] = await db.query(
       `SELECT ra.id, dr.id AS reportId, ra.description, ra.objectives, ra.category,
@@ -2343,11 +2346,11 @@ exports.decideChefServiceActivity = async (req, res, next) => {
           AND LOWER(TRIM(ra.status)) <> 'superseded'
           AND LOWER(TRIM(dr.status)) = 'submitted'
           AND (dr.submitted_to = ? OR dr.submitted_to IS NULL)`,
-      [decision === 'request_changes' ? 'changes_requested' : decision, req.user.id, decision === 'approved' ? null : reason, activityId, department, req.user.id]
+      [decision === 'request_changes' ? 'changes_requested' : decision, req.user.id, decision === 'approved' ? null : reason, activityId, department, req.user.delegatedPrincipalId || req.user.id]
     );
     if (result.affectedRows) {
       const [reportRows] = await db.query(
-        `SELECT dr.id FROM daily_reports dr JOIN report_activities ra ON ra.daily_report_id=dr.id WHERE ra.id=? LIMIT 1`, [activityId]
+        `SELECT dr.id,dr.user_id AS userId FROM daily_reports dr JOIN report_activities ra ON ra.daily_report_id=dr.id WHERE ra.id=? LIMIT 1`, [activityId]
       );
       if (reportRows.length) {
         await db.query(
@@ -2357,6 +2360,7 @@ exports.decideChefServiceActivity = async (req, res, next) => {
         );
       }
       await notifications.notifyReportDecision(activityId, decision, reason);
+      if(reportRows.length)webhookService.dispatchEvent(reportRows[0].userId,`report.${decision}`,{reportId:reportRows[0].id,activityId,comment:reason}).catch(()=>{});
     }
     if (!result.affectedRows) {
       return res.status(409).json({ success: false, message: 'Cette activité n’est plus en attente ou ne relève pas de votre département.' });
@@ -2387,7 +2391,7 @@ exports.bulkApproveChefServiceReports = async (req, res, next) => {
         WHERE ra.id IN (?) AND u.department=? AND LOWER(TRIM(u.role))='agent'
           AND LOWER(TRIM(ra.status))<>'superseded'
           AND dr.status='submitted' AND (dr.submitted_to=? OR dr.submitted_to IS NULL)`,
-      [ids, department, req.user.id]
+      [ids, department, req.user.delegatedPrincipalId || req.user.id]
     );
     const [matched] = await connection.query(
       `SELECT COUNT(DISTINCT ra.id) AS total
@@ -2396,7 +2400,7 @@ exports.bulkApproveChefServiceReports = async (req, res, next) => {
         WHERE ra.id IN (?) AND u.department=? AND LOWER(TRIM(u.role))='agent'
           AND LOWER(TRIM(ra.status))<>'superseded'
           AND dr.status='submitted' AND (dr.submitted_to=? OR dr.submitted_to IS NULL)`,
-      [ids, department, req.user.id]
+      [ids, department, req.user.delegatedPrincipalId || req.user.id]
     );
     if (Number(matched[0]?.total || 0) !== ids.length) {
       await connection.rollback();

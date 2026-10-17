@@ -15,12 +15,12 @@ async function ensureAdminSchema() {
       is_active tinyint(1) NOT NULL DEFAULT 1,
       created_at timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci`);
     await db.query(`CREATE TABLE IF NOT EXISTS roles (
       id varchar(30) NOT NULL PRIMARY KEY,
       name varchar(60) NOT NULL,
       is_active tinyint(1) NOT NULL DEFAULT 1
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci`);
     await db.query(`INSERT IGNORE INTO roles(id,name) VALUES
       ('agent','Agent'),('chef_service','Chef de service'),('manager','Manager'),
       ('chef_de_service','Chef de service'),('chef','Chef'),('big_manager','Big manager'),('admin','Administrateur')`);
@@ -34,14 +34,14 @@ async function ensureAdminSchema() {
       created_at timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
       KEY idx_admin_audit_created (created_at),
       KEY idx_admin_audit_actor (actor_id)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci`);
     await db.query(`CREATE TABLE IF NOT EXISTS admin_retention_policies (
       entity_type varchar(40) NOT NULL PRIMARY KEY,
       retention_days int unsigned NOT NULL DEFAULT 365,
       is_enabled tinyint(1) NOT NULL DEFAULT 0,
       updated_by varchar(36) NULL,
       updated_at timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci`);
     await db.query(`CREATE TABLE IF NOT EXISTS data_archives (
       id bigint unsigned NOT NULL AUTO_INCREMENT PRIMARY KEY,
       entity_type varchar(40) NOT NULL,
@@ -55,10 +55,13 @@ async function ensureAdminSchema() {
       UNIQUE KEY uq_archive_source (entity_type, source_id),
       KEY idx_archive_date (record_date),
       KEY idx_archive_department (department)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci`);
     await db.query(`INSERT IGNORE INTO admin_retention_policies (entity_type,retention_days,is_enabled)
       VALUES ('daily_report',365,0),('report_issue',365,0),('notation',365,0)`);
-    await db.query('ALTER TABLE departments CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci');
+    await db.query('ALTER TABLE departments CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci');
+    await db.query('ALTER TABLE admin_audit_logs CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci');
+    await db.query('ALTER TABLE admin_retention_policies CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci');
+    await db.query('ALTER TABLE data_archives CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci');
     await db.query('ALTER TABLE departments MODIFY id varchar(100) NOT NULL');
     await db.query(`INSERT IGNORE INTO departments (id, name)
       SELECT TRIM(department), TRIM(department) FROM users
@@ -70,7 +73,7 @@ async function ensureAdminSchema() {
     await db.query(`INSERT IGNORE INTO roles(id,name)
       SELECT LOWER(REPLACE(REPLACE(TRIM(role),' ','_'),'-','_')), LOWER(REPLACE(REPLACE(TRIM(role),' ','_'),'-','_'))
       FROM users WHERE role IS NOT NULL AND TRIM(role)<>'' AND CHAR_LENGTH(TRIM(role))<=30`);
-    await db.query("ALTER TABLE users MODIFY role varchar(30) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'agent', MODIFY department varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL");
+    await db.query("ALTER TABLE users MODIFY role varchar(30) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT 'agent', MODIFY department varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL");
     const [[roleForeignKey]] = await db.query(`SELECT COUNT(*) AS count FROM information_schema.TABLE_CONSTRAINTS
       WHERE CONSTRAINT_SCHEMA=DATABASE() AND TABLE_NAME='users' AND CONSTRAINT_NAME='fk_users_role_id'`);
     if (!Number(roleForeignKey.count)) await db.query('ALTER TABLE users ADD CONSTRAINT fk_users_role_id FOREIGN KEY (role) REFERENCES roles(id) ON UPDATE CASCADE ON DELETE RESTRICT');

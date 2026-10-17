@@ -9,11 +9,14 @@ const rateLimit = require('./rateLimit');
 const bigManagerController = require('./bigManagerController');
 const notificationsController = require('./notificationsController');
 const activityAudit = require('./activityAudit');
+const advancedFeaturesController = require('./advancedFeaturesController');
+const monthlySummaryService = require('./monthlySummaryService');
 const loginLimit = rateLimit({ max: 8, scope: 'login', keyBy: req => req.body?.identity });
 const otpLimit = rateLimit({ max: 8, scope: 'otp', keyBy: req => req.body?.preAuthToken || req.body?.userId || req.body?.email });
 const recoveryLimit = rateLimit({ max: 4, scope: 'password-recovery', keyBy: req => req.body?.email || req.body?.userId });
 const registrationLimit = rateLimit({ max: 25 });
 const publicConfigLimit = rateLimit({ max: 120 });
+const externalApiLimit = rateLimit({ max: 60, scope: 'external-api', keyBy: req => req.get('x-api-token') });
 
 // ============================================================================
 // 1. ROUTES PUBLIQUES (Non protégées)
@@ -72,6 +75,29 @@ router.get('/activity-history', protect, activityAudit.getOwnHistory);
 router.get('/privacy/export', protect, activityAudit.exportOwnData);
 router.put('/profile', protect, dashesController.updateProfile);
 router.put('/change-password', protect, dashesController.changePassword);
+router.get('/my/objectives', protect, advancedFeaturesController.getMyObjectives);
+router.get('/my/api-tokens', protect, advancedFeaturesController.getMyApiTokens);
+router.post('/my/api-tokens', protect, advancedFeaturesController.createApiToken);
+router.delete('/my/api-tokens/:id', protect, advancedFeaturesController.revokeApiToken);
+router.get('/my/webhooks', protect, advancedFeaturesController.listWebhooks);
+router.post('/my/webhooks', protect, advancedFeaturesController.createWebhook);
+router.delete('/my/webhooks/:id', protect, advancedFeaturesController.revokeWebhook);
+router.post('/push/subscribe', protect, advancedFeaturesController.savePushSubscription);
+router.post('/push/unsubscribe', protect, advancedFeaturesController.deletePushSubscription);
+router.get('/push/config', protect, advancedFeaturesController.getPushConfig);
+router.get('/big-manager/analytics', protect, restrictTo('big_manager'), advancedFeaturesController.getDepartmentAnalytics);
+router.get('/delegations', protect, advancedFeaturesController.getDelegations);
+router.post('/delegations', protect, restrictTo('admin','big_manager','chef_service'), advancedFeaturesController.createDelegation);
+router.delete('/delegations/:id', protect, restrictTo('admin','big_manager','chef_service'), advancedFeaturesController.revokeDelegation);
+router.post('/big-manager/objectives', protect, restrictTo('admin','big_manager','chef_service'), advancedFeaturesController.setObjective);
+router.get('/big-manager/objectives', protect, restrictTo('admin','big_manager','chef_service'), advancedFeaturesController.listDepartmentObjectives);
+router.get('/admin/module-permissions', protect, adminController.requireActiveAdmin, advancedFeaturesController.getModulePermissions);
+router.put('/admin/module-permissions', protect, adminController.requireActiveAdmin, advancedFeaturesController.setModulePermission);
+router.get('/external/reports', externalApiLimit, advancedFeaturesController.externalReports);
+router.post('/admin/monthly-summary/run', protect, adminController.requireActiveAdmin, async (_req,res,next)=>{
+  try { const result=await monthlySummaryService.sendMonthlySummary(new Date(new Date().getFullYear(),new Date().getMonth(),1,Number(process.env.MONTHLY_SUMMARY_HOUR||8))); return res.json({success:true,...result}); }
+  catch(error){next(error);}
+});
 
 // Gestion des Avatars
 router.post('/charge-avatar', protect, verifyAvatar, dashesController.chargeAvatar);

@@ -13,7 +13,7 @@ async function ensureTable() {
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     KEY idx_activity_user_time (user_id, created_at),
     KEY idx_activity_time (created_at)
-  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`).catch(error => { ready = null; throw error; });
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci`).catch(error => { ready = null; throw error; });
   return ready;
 }
 

@@ -74,6 +74,15 @@ test('parcours métier : les managers accèdent au tableau chef de service prév
   }
 });
 
+test('une délégation active donne accès au module chef uniquement quand elle a été vérifiée en base', () => {
+  const req={user:{id:'deputy',role:'agent',delegatedPrincipalId:'principal'}};
+  const result={next:false,status:null};
+  const res={status(code){result.status=code;return this;},json(){return this;}};
+  restrictTo('chef_service')(req,res,()=>{result.next=true;});
+  assert.equal(result.next,true);
+  assert.equal(authorize('agent','chef_service').status,403);
+});
+
 test('les alias de récupération partagent le même quota lorsqu’ils ont le même scope', () => {
   const limit = rateLimit({ max: 1, scope: 'test-password-recovery', keyBy: req => req.body?.email });
   const call = path => {

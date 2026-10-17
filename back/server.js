@@ -1,6 +1,8 @@
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
+const fs = require('fs');
+const https = require('https');
 require('dotenv').config({ path: path.join(__dirname, '.env') });
 
 // 1. Correction des imports locaux avec './'
@@ -9,6 +11,7 @@ const dashRoutes = require('./dashRoutes');
 const activityAudit = require('./activityAudit');
 const dailyReminderService = require('./dailyReminderService');
 const maintenanceService = require('./maintenanceService');
+const monthlySummaryService = require('./monthlySummaryService');
 const db = require('./db');
 
 const app = express();
@@ -97,6 +100,8 @@ app.get('/api/health', (_req, res) => {
 
 // Exposer tous les sous-dossiers de 'front'
 app.use(express.static(path.join(__dirname, '../front')));
+app.use('/vendor/tesseract', express.static(path.join(__dirname, '../node_modules/tesseract.js/dist'), { immutable:true, maxAge:'1d' }));
+app.use('/vendor/tesseract-core', express.static(path.join(__dirname, '../node_modules/tesseract.js-core'), { immutable:true, maxAge:'1d' }));
 
 // Exposer 'front/html' pour accéder directement aux pages
 app.use(express.static(path.join(__dirname, '../front/html'), { index: false }));
@@ -125,13 +130,21 @@ app.use((err, req, res, next) => {
 const PORT = process.env.PORT || 5000;
 const HOST = process.env.HOST || '0.0.0.0';
 if (require.main === module) {
-  app.listen(PORT, HOST, () => {
-    console.log(`Serveur accessible sur http://${HOST}:${PORT} (localhost ou adresse IP du réseau local)`);
+  const keyPath=process.env.TLS_KEY_FILE,certPath=process.env.TLS_CERT_FILE;
+  if(Boolean(keyPath)!==Boolean(certPath))throw new Error('TLS_KEY_FILE et TLS_CERT_FILE doivent être définis ensemble.');
+  const listener=keyPath
+    ? https.createServer({key:fs.readFileSync(path.resolve(keyPath)),cert:fs.readFileSync(path.resolve(certPath))},app).listen(Number(process.env.HTTPS_PORT)||PORT,HOST)
+    : app.listen(PORT, HOST);
+  listener.on('listening', () => {
+    const protocol=keyPath?'https':'http',port=listener.address().port;
+    console.log(`Serveur accessible sur ${protocol}://${HOST}:${port} (localhost ou adresse IP du réseau local)`);
     dailyReminderService.dispatchDailyReportReminders().catch(error => console.error('Rappels journaliers indisponibles:', error.message));
     maintenanceService.runDailyMaintenance().catch(error => console.error('Maintenance quotidienne indisponible:', error.message));
+    monthlySummaryService.sendMonthlySummary().catch(error => console.error('Synthèse mensuelle indisponible:', error.message));
     const reminderTimer = setInterval(() => {
       dailyReminderService.dispatchDailyReportReminders().catch(error => console.error('Rappels journaliers indisponibles:', error.message));
       maintenanceService.runDailyMaintenance().catch(error => console.error('Maintenance quotidienne indisponible:', error.message));
+      monthlySummaryService.sendMonthlySummary().catch(error => console.error('Synthèse mensuelle indisponible:', error.message));
     }, 15 * 60 * 1000);
     reminderTimer.unref();
   });
