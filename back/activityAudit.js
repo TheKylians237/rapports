@@ -37,4 +37,43 @@ async function getOwnHistory(req,res,next) {
   } catch(error){next(error);}
 }
 
-module.exports = { middleware, ensureTable, getOwnHistory };
+async function exportOwnData(req, res, next) {
+  try {
+    await ensureTable();
+    const userId = req.user.id;
+    const [[profile]] = await db.query(
+      `SELECT id, last_name, username, email, phone, role, department, job_title, bio, avatar_url, created_at
+         FROM users WHERE id=? LIMIT 1`, [userId]
+    );
+    const [reports] = await db.query(
+      `SELECT id, report_date, total_hours, status, review_comment, next_day_targets, general_comments, created_at, updated_at
+         FROM daily_reports WHERE user_id=? ORDER BY report_date DESC`, [userId]
+    );
+    const [activities] = await db.query(
+      `SELECT ra.id, ra.daily_report_id AS reportId, ra.description, ra.objectives, ra.category, ra.status,
+              ra.obsevations AS observations, ra.hours, ra.created_at AS createdAt
+         FROM report_activities ra JOIN daily_reports dr ON dr.id=ra.daily_report_id
+        WHERE dr.user_id=? ORDER BY dr.report_date DESC, ra.id`, [userId]
+    );
+    const [proposals] = await db.query(
+      `SELECT ri.id, ri.report_id AS reportId, ri.activity_id AS activityId, ri.issue_description,
+              ri.proposed_solution, ri.needs_manager_help, ri.status, ri.review_comment, ri.created_at
+         FROM report_issues ri JOIN daily_reports dr ON dr.id=ri.report_id
+        WHERE dr.user_id=? ORDER BY ri.created_at DESC`, [userId]
+    );
+    const [evaluations] = await db.query(
+      `SELECT evaluation_date AS date, rating, comment, created_at AS createdAt
+         FROM agent_evaluations WHERE agent_id=? ORDER BY evaluation_date DESC`, [userId]
+    );
+    const [history] = await db.query(
+      `SELECT action, route, status_code AS statusCode, ip_address AS ipAddress, created_at AS createdAt
+         FROM activity_logs WHERE user_id=? ORDER BY created_at DESC LIMIT 1000`, [userId]
+    );
+    const exportDate = new Date().toISOString();
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="rapports-donnees-${exportDate.slice(0, 10)}.json"`);
+    return res.json({ exportedAt: exportDate, profile, reports, activities, proposals, evaluations, history });
+  } catch (error) { return next(error); }
+}
+
+module.exports = { middleware, ensureTable, getOwnHistory, exportOwnData };

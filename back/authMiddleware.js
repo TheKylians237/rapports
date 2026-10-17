@@ -43,6 +43,14 @@ const protect = async (req, res, next) => {
     }
 
     if (!decoded.id) return res.status(401).json({ success: false, message: 'Session invalide.' });
+    if (decoded.jti) {
+      const [sessions] = await db.execute(
+        'SELECT id FROM user_sessions WHERE id=? AND user_id=? AND revoked_at IS NULL AND expires_at>NOW() LIMIT 1',
+        [decoded.jti, decoded.id]
+      );
+      if (!sessions.length) return res.status(401).json({ success: false, message: 'Session terminée ou expirée. Reconnectez-vous.' });
+      await db.execute('UPDATE user_sessions SET last_seen=NOW() WHERE id=?', [decoded.jti]);
+    }
     // Le rôle et l'état du compte sont relus en base à chaque requête protégée.
     const [users] = await db.execute('SELECT id, role, email, is_active FROM users WHERE id = ? LIMIT 1', [decoded.id]);
     if (!users.length || Number(users[0].is_active) !== 1) {

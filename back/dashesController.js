@@ -3,7 +3,7 @@ const bcrypt = require('bcrypt'); // Assurez-vous d'avoir installé bcrypt / bcr
 const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs');
-const { isValidPassword, PASSWORD_MIN_LENGTH } = require('./validators');
+const { isValidPassword, isValidIsoDate, PASSWORD_MIN_LENGTH } = require('./validators');
 const notifications = require('./notificationsController');
 
 
@@ -73,6 +73,7 @@ exports.getDashboardData = async (req, res) => {
         r.report_hours,
         r.total_hours,
         r.status,
+        r.review_comment,
         r.next_day_targets,
         r.general_comments,
         r.created_at,
@@ -125,19 +126,61 @@ exports.getDashboardData = async (req, res) => {
   }
 };
 
+exports.getLatestReportActivities = async (req, res) => {
+  try {
+    const [rows] = await db.query(
+      `SELECT ra.description, ra.category, ra.hours
+         FROM daily_reports dr
+         JOIN report_activities ra ON ra.daily_report_id = dr.id
+        WHERE dr.id = (
+          SELECT previous.id FROM daily_reports previous
+           WHERE previous.user_id = ? AND previous.report_date < CURDATE()
+           ORDER BY previous.report_date DESC, previous.created_at DESC LIMIT 1
+        )
+        ORDER BY ra.id ASC
+        LIMIT 20`,
+      [req.user.id],
+    );
+    return res.json({ success: true, activities: rows });
+  } catch (error) {
+    console.error('getLatestReportActivities:', error.message);
+    return res.status(500).json({ success: false, message: 'Impossible de charger les activités précédentes.' });
+  }
+};
+
+exports.getAgentReminderStatus = async (req, res) => {
+  try {
+    const configuredHour = Number.parseInt(process.env.DAILY_REPORT_REMINDER_HOUR || '18', 10);
+    const hour = Number.isInteger(configuredHour) && configuredHour >= 0 && configuredHour <= 23 ? configuredHour : 18;
+    const [rows] = await db.query(
+      'SELECT COUNT(*) AS submitted FROM daily_reports WHERE user_id=? AND report_date=CURDATE()', [req.user.id]
+    );
+    const submitted = Number(rows[0]?.submitted || 0) > 0;
+    const late = !submitted && new Date().getHours() >= hour;
+    return res.json({ success: true, late, submitted, reminderHour: hour });
+  } catch (error) {
+    console.error('getAgentReminderStatus:', error.message);
+    return res.status(500).json({ success: false, message: 'Impossible de vérifier l’état du rapport journalier.' });
+  }
+};
+
 /**
  * Enregistre un nouveau rapport journalier
  */
-const createCanonicalDailyReport = async ({ userId, submittedTo = null, reportDate, totalHours, comments, nextDayTargets, activities }) => {
+const createCanonicalDailyReport = async ({ userId, submittedTo = null, reportDate, totalHours, comments, nextDayTargets, activities, clientSubmissionId }) => {
   const connection = await db.getConnection();
   const reportId = crypto.randomUUID();
   try {
     await connection.beginTransaction();
     await connection.execute(
       `INSERT INTO daily_reports
-        (id, user_id, submitted_to, report_date, total_hours, status, next_day_targets, general_comments, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, 'submitted', ?, ?, NOW(), NOW())`,
-      [reportId, userId, submittedTo, reportDate, totalHours, nextDayTargets || null, comments || null]
+        (id, user_id, submitted_to, report_date, total_hours, status, next_day_targets, general_comments, client_submission_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, 'submitted', ?, ?, ?, NOW(), NOW())`,
+      [reportId, userId, submittedTo, reportDate, totalHours, nextDayTargets || null, comments || null, clientSubmissionId]
+    );
+    await connection.execute(
+      `INSERT INTO report_status_history (report_id, previous_status, new_status, comment, actor_id)
+       VALUES (?, NULL, 'submitted', NULL, ?)`, [reportId, userId]
     );
     for (const activity of activities) {
       await connection.execute(
@@ -157,6 +200,105 @@ const createCanonicalDailyReport = async ({ userId, submittedTo = null, reportDa
   }
 };
 
+exports.getReportForCorrection = async (req, res) => {
+  try {
+    const reportId = String(req.params.reportId || '').trim();
+    const [reports] = await db.query(
+      `SELECT id, submitted_to, report_date, general_comments, next_day_targets, review_comment, status
+         FROM daily_reports WHERE id = ? AND user_id = ? LIMIT 1`, [reportId, req.user.id]
+    );
+    if (!reports.length) return res.status(404).json({ success: false, message: 'Rapport introuvable.' });
+    if (reports[0].status !== 'changes_requested') return res.status(409).json({ success: false, message: 'Ce rapport ne demande pas de correction.' });
+    const [activities] = await db.query(
+      `SELECT description, category, hours, objectives, obsevations AS observations
+         FROM report_activities WHERE daily_report_id = ? AND LOWER(status) <> 'superseded' ORDER BY id`, [reportId]
+    );
+    return res.json({ success: true, report: reports[0], activities });
+  } catch (error) {
+    console.error('getReportForCorrection:', error.message);
+    return res.status(500).json({ success: false, message: 'Impossible de charger le rapport à corriger.' });
+  }
+};
+
+exports.resubmitCorrectedReport = async (req, res) => {
+  const connection = await db.getConnection();
+  try {
+    const reportId = String(req.params.reportId || '').trim();
+    const submittedTo = String(req.body?.submitted_to || '').trim();
+    const activities = Array.isArray(req.body?.activities) ? req.body.activities.slice(0, 50).map(activity => ({
+      description: String(activity.description || '').trim().slice(0, 255),
+      objectives: String(activity.objectives || '').trim().slice(0, 5000),
+      observations: String(activity.observations || activity.obsevations || '').trim().slice(0, 5000),
+      category: String(activity.category || 'Autre').trim().slice(0, 100),
+      hours: Number(activity.hours),
+    })) : [];
+    if (!submittedTo || !activities.length || activities.some(activity => !activity.description || !Number.isFinite(activity.hours) || activity.hours <= 0 || activity.hours > 24)) {
+      return res.status(400).json({ success: false, message: 'Vérifiez le destinataire, les descriptions et les durées des activités.' });
+    }
+    await connection.beginTransaction();
+    const [reports] = await connection.query(
+      `SELECT dr.id, dr.status, dr.report_date, dr.review_comment, u.department
+         FROM daily_reports dr JOIN users u ON u.id = dr.user_id
+        WHERE dr.id = ? AND dr.user_id = ? FOR UPDATE`, [reportId, req.user.id]
+    );
+    if (!reports.length) { await connection.rollback(); return res.status(404).json({ success: false, message: 'Rapport introuvable.' }); }
+    const report = reports[0];
+    if (report.status !== 'changes_requested') { await connection.rollback(); return res.status(409).json({ success: false, message: 'Ce rapport ne demande plus de correction.' }); }
+    const [recipient] = await connection.query(
+      `SELECT id FROM users WHERE id = ? AND department = ? AND is_active = 1
+        AND LOWER(REPLACE(REPLACE(TRIM(role), ' ', '_'), '-', '_')) IN ('manager','chef_service','chef_de_service','chef') LIMIT 1`,
+      [submittedTo, report.department]
+    );
+    if (!recipient.length) { await connection.rollback(); return res.status(400).json({ success: false, message: 'Choisissez un chef de service actif de votre département.' }); }
+    const totalHours = activities.reduce((sum, activity) => sum + activity.hours, 0);
+    if (totalHours > 24) { await connection.rollback(); return res.status(400).json({ success: false, message: 'Le total des activités ne peut pas dépasser 24 heures.' }); }
+    const [oldActivities] = await connection.query(
+      `SELECT id FROM report_activities WHERE daily_report_id=? AND LOWER(status)<>'superseded' ORDER BY id FOR UPDATE`, [reportId]
+    );
+    for (let index = 0; index < activities.length; index += 1) {
+      const activity = activities[index];
+      if (oldActivities[index]) {
+        await connection.query(
+          `UPDATE report_activities SET description=?, objectives=?, category=?, status='Pending', obsevations=?, hours=? WHERE id=?`,
+          [activity.description, activity.objectives || null, activity.category, activity.observations || null, activity.hours, oldActivities[index].id]
+        );
+      } else {
+        await connection.query(
+          `INSERT INTO report_activities (daily_report_id, description, objectives, category, status, obsevations, hours)
+           VALUES (?, ?, ?, ?, 'Pending', ?, ?)`,
+          [reportId, activity.description, activity.objectives || null, activity.category, activity.observations || null, activity.hours]
+        );
+      }
+    }
+    for (const activity of oldActivities.slice(activities.length)) {
+      // Conserver les IDs : des propositions peuvent encore référencer ces activités.
+      await connection.query(`UPDATE report_activities SET status='Superseded' WHERE id=?`, [activity.id]);
+    }
+    await connection.query(
+      `UPDATE daily_reports SET submitted_to = ?, total_hours = ?, general_comments = ?, next_day_targets = ?,
+              status = 'submitted', review_comment = NULL, reviewed_by = NULL, reviewed_at = NULL, updated_at = NOW()
+        WHERE id = ?`,
+      [submittedTo, totalHours, String(req.body?.general_comments || '').slice(0, 5000), String(req.body?.next_day_targets || '').slice(0, 5000), reportId]
+    );
+    await connection.query(
+      `INSERT INTO report_status_history (report_id, previous_status, new_status, comment, actor_id)
+       VALUES (?, 'changes_requested', 'submitted', ?, ?)`, [reportId, report.review_comment || null, req.user.id]
+    );
+    await connection.commit();
+    await notifications.createNotification(submittedTo, {
+      title: 'Rapport corrigé et resoumis', body: `Un rapport du ${formatSqlDate(report.report_date)} a été resoumis après correction.`,
+      type: 'report_resubmitted', link: '/html/chef_service_dashboard.html',
+    });
+    return res.json({ success: true, message: 'Rapport corrigé et resoumis au chef de service.' });
+  } catch (error) {
+    await connection.rollback();
+    console.error('resubmitCorrectedReport:', error.message);
+    return res.status(500).json({ success: false, message: 'Impossible de resoumettre le rapport corrigé.' });
+  } finally {
+    connection.release();
+  }
+};
+
 exports.storeReport = async (req, res) => {
   try {
     const userId = req.user?.id;
@@ -164,7 +306,12 @@ exports.storeReport = async (req, res) => {
     const now = new Date();
     const localToday = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
     const reportDate = report_date || date || localToday;
+    const rawSubmissionId = String(req.body?.client_submission_id || '').trim();
+    const clientSubmissionId = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(rawSubmissionId)
+      ? rawSubmissionId : crypto.randomUUID();
     if (!userId) return res.status(401).json({ success: false, message: 'Session utilisateur invalide.' });
+    const [existing] = await db.query('SELECT id FROM daily_reports WHERE user_id=? AND client_submission_id=? LIMIT 1', [userId, clientSubmissionId]);
+    if (existing.length) return res.status(200).json({ success: true, message: 'Rapport déjà synchronisé.', report_id: existing[0].id, reportId: existing[0].id, duplicate: true });
     const recipientId = String(submittedTo || managerId || '').trim();
     if (!recipientId) return res.status(400).json({ success: false, message: 'Choisissez le chef de service destinataire du rapport.' });
     const [recipientRows] = await db.query(
@@ -191,7 +338,7 @@ exports.storeReport = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Chaque activité doit avoir une description et une durée positive.' });
     }
     const totalHours = normalizedActivities.reduce((sum, a) => sum + a.hours, 0);
-    const reportId = await createCanonicalDailyReport({ userId, submittedTo: recipientId, reportDate, totalHours, comments, nextDayTargets, activities: normalizedActivities });
+    const reportId = await createCanonicalDailyReport({ userId, submittedTo: recipientId, reportDate, totalHours, comments, nextDayTargets, activities: normalizedActivities, clientSubmissionId });
     await notifications.createNotification(recipientId, {
       title: 'Nouveau rapport à valider',
       body: `Un agent a soumis un rapport du ${reportDate}.`,
@@ -200,6 +347,12 @@ exports.storeReport = async (req, res) => {
     });
     return res.status(201).json({ success: true, message: 'Rapport et activités soumis avec succès.', report_id: reportId, reportId });
   } catch (error) {
+    if (error.code === 'ER_DUP_ENTRY' && req.body?.client_submission_id) {
+      try {
+        const [existing] = await db.query('SELECT id FROM daily_reports WHERE user_id=? AND client_submission_id=? LIMIT 1', [req.user?.id, req.body.client_submission_id]);
+        if (existing.length) return res.status(200).json({ success: true, message: 'Rapport déjà synchronisé.', report_id: existing[0].id, reportId: existing[0].id, duplicate: true });
+      } catch (lookupError) { console.error('Idempotence rapport:', lookupError.message); }
+    }
     console.error('Erreur lors de l’enregistrement du rapport journalier :', error);
     const duplicate = error.code === 'ER_DUP_ENTRY';
     return res.status(duplicate ? 409 : 500).json({
@@ -236,6 +389,37 @@ exports.getAgentActivitiesForProposal = async (req, res, next) => {
     console.error('Erreur dans getAgentActivitiesForProposal:', error);
     next(error);
   }
+};
+
+exports.getMyAssignedIssues = async (req, res, next) => {
+  try {
+    const [rows] = await db.query(
+      `SELECT ri.id, ri.issue_description AS description, ri.proposed_solution AS proposedSolution,
+              ri.task_status AS taskStatus, ri.due_date AS dueDate, ri.status AS reviewStatus,
+              dr.report_date AS reportDate, ra.description AS activityDescription,
+              assigner.last_name AS assignedBy
+         FROM report_issues ri JOIN daily_reports dr ON dr.id=ri.report_id
+         LEFT JOIN report_activities ra ON ra.id=ri.activity_id
+         LEFT JOIN users assigner ON assigner.id=ri.reviewed_by
+        WHERE ri.assigned_to=? ORDER BY (ri.due_date IS NULL), ri.due_date, ri.created_at DESC LIMIT 200`, [req.user.id]
+    );
+    return res.json({ success: true, tasks: rows.map(row => ({ ...row, reportDate: formatSqlDate(row.reportDate), dueDate: formatSqlDate(row.dueDate) })) });
+  } catch (error) { return next(error); }
+};
+
+exports.updateMyAssignedIssue = async (req, res, next) => {
+  try {
+    const issueId = String(req.params.issueId || '').trim();
+    const taskStatus = String(req.body?.taskStatus || '').trim().toLowerCase();
+    if (!['open', 'in_progress', 'done', 'blocked'].includes(taskStatus)) return res.status(400).json({ success: false, message: 'Statut de tâche invalide.' });
+    const [result] = await db.query('UPDATE report_issues SET task_status=? WHERE id=? AND assigned_to=?', [taskStatus, issueId, req.user.id]);
+    if (!result.affectedRows) {
+      const [rows] = await db.query('SELECT task_status FROM report_issues WHERE id=? AND assigned_to=? LIMIT 1', [issueId, req.user.id]);
+      if (!rows.length) return res.status(404).json({ success: false, message: 'Tâche assignée introuvable.' });
+      if (rows[0].task_status !== taskStatus) return res.status(409).json({ success: false, message: 'Le statut a changé. Actualisez la page.' });
+    }
+    return res.json({ success: true, taskStatus });
+  } catch (error) { return next(error); }
 };
 
 // Enregistre une proposition séparément et la rattache à l'activité choisie.
@@ -303,7 +487,7 @@ exports.getMyReportIssues = async (req, res, next) => {
         WHERE ${conditions.join(' AND ')}
         ORDER BY ri.created_at DESC, ri.id DESC LIMIT 200`, params
     );
-    return res.json({ success: true, proposals: rows.map(row => ({ ...row, reportDate: formatSqlDate(row.reportDate) })) });
+    return res.json({ success: true, proposals: rows.map(row => ({ ...row, reportDate: formatSqlDate(row.reportDate), dueDate: formatSqlDate(row.dueDate) })) });
   } catch (error) {
     console.error('Erreur dans getMyReportIssues:', error);
     next(error);
@@ -332,6 +516,8 @@ exports.getChefServiceReportIssues = async (req, res, next) => {
       `SELECT ri.id, ri.issue_description AS description, ri.proposed_solution AS proposedSolution,
               ri.status, ri.review_comment AS reviewComment, ri.created_at AS createdAt,
               ri.reviewed_at AS reviewedAt, ri.needs_manager_help AS needsManagerHelp,
+              ri.assigned_to AS assignedTo, ri.due_date AS dueDate, ri.task_status AS taskStatus,
+              assignee.last_name AS assigneeName,
               ra.description AS activityDescription, dr.report_date AS reportDate,
               agent.id AS agentId, agent.last_name AS agentName, agent.username,
               reviewer.last_name AS reviewerName
@@ -340,15 +526,42 @@ exports.getChefServiceReportIssues = async (req, res, next) => {
          JOIN users agent ON agent.id = dr.user_id
          LEFT JOIN report_activities ra ON ra.id = ri.activity_id
          LEFT JOIN users reviewer ON reviewer.id = ri.reviewed_by
+         LEFT JOIN users assignee ON assignee.id = ri.assigned_to
         WHERE ${conditions.join(' AND ')}
         ORDER BY CASE WHEN LOWER(TRIM(ri.status)) = 'pending' THEN 0 ELSE 1 END,
                  ri.created_at DESC, ri.id DESC LIMIT 300`, params
     );
-    return res.json({ success: true, proposals: rows.map(row => ({ ...row, reportDate: formatSqlDate(row.reportDate) })) });
+    return res.json({ success: true, proposals: rows.map(row => ({ ...row, reportDate: formatSqlDate(row.reportDate), dueDate: formatSqlDate(row.dueDate) })) });
   } catch (error) {
     console.error('Erreur dans getChefServiceReportIssues:', error);
     next(error);
   }
+};
+
+exports.assignChefServiceIssue = async (req, res, next) => {
+  try {
+    const department = await getChefServiceDepartment(req);
+    if (!department) return res.status(403).json({ success: false, message: 'Accès réservé au chef de service.' });
+    const issueId = String(req.params.issueId || '').trim();
+    const assignedTo = String(req.body?.assignedTo || '').trim();
+    const dueDate = String(req.body?.dueDate || '').trim();
+    const [issueRows] = await db.query(
+      `SELECT ri.id FROM report_issues ri JOIN daily_reports dr ON dr.id=ri.report_id
+       JOIN users agent ON agent.id=dr.user_id WHERE ri.id=? AND agent.department=? LIMIT 1`, [issueId, department]
+    );
+    if (!issueRows.length) return res.status(404).json({ success: false, message: 'Proposition introuvable dans votre département.' });
+    if (assignedTo) {
+      const [users] = await db.query("SELECT id FROM users WHERE id=? AND department=? AND is_active=1 AND LOWER(TRIM(role))='agent' LIMIT 1", [assignedTo, department]);
+      if (!users.length) return res.status(400).json({ success: false, message: 'Le responsable doit être un agent actif de votre département.' });
+    }
+    if (dueDate && !isValidIsoDate(dueDate)) return res.status(400).json({ success: false, message: 'Échéance invalide.' });
+    await db.query('UPDATE report_issues SET assigned_to=?, due_date=? WHERE id=?', [assignedTo || null, dueDate || null, issueId]);
+    if (assignedTo) await notifications.createNotification(assignedTo, {
+      title: 'Tâche assignée', body: 'Une difficulté ou proposition vous a été assignée par votre chef de service.',
+      type: 'issue_assigned', link: '/html/dashb_agent.html',
+    });
+    return res.json({ success: true, message: assignedTo ? 'Tâche assignée avec son échéance.' : 'Assignation retirée.' });
+  } catch (error) { return next(error); }
 };
 
 // Le motif de rejet est exigé et les décisions ne s'appliquent qu'aux propositions en attente.
@@ -646,94 +859,31 @@ exports.changePassword = async (req, res) => {
 };
 
 
-/**
- * Calcule le hash MD5 d'un fichier de façon sécurisée
- */
-function getFileHash(filePath) {
-  const fileBuffer = fs.readFileSync(filePath);
-  // Utilisation directe du module crypto de Node.js
-  return crypto.createHash('md5').update(fileBuffer).digest('hex');
-}
-
 exports.chargeAvatar = async (req, res) => {
+  const file = req.file;
   try {
-    const user_id = req.user?.id;
-    const file = req.file; // Fichier temporaire enregistré par Multer
+    const userId = req.user?.id;
+    if (!userId || !file) return res.status(400).json({ success: false, message: 'Utilisateur et image requis.' });
 
-    if (!user_id || !file) {
-      if (file && fs.existsSync(file.path)) fs.unlinkSync(file.path);
-      return res.status(400).json({
-        success: false,
-        message: "L'identifiant (user_id) et le fichier image sont requis."
-      });
-    }
-
-    const uploadDir = path.join(__dirname, '../img');
-    const tempFilePath = file.path;
-    const uploadedHash = getFileHash(tempFilePath);
-    const fileExt = path.extname(file.originalname).toLowerCase();
-
-    let existingFileName = null;
-
-    // 1. Parcourir tous les fichiers du dossier /img pour vérifier si un contenu identique existe déjà
-    const files = fs.readdirSync(uploadDir);
-
-    for (const f of files) {
-      // On ignore le fichier temporaire en cours d'analyse
-      if (f.startsWith('temp-')) continue;
-
-      const currentFilePath = path.join(uploadDir, f);
-
-      // Si c'est un fichier valide, on compare son hash MD5
-      if (fs.statSync(currentFilePath).isFile()) {
-        const currentHash = getFileHash(currentFilePath);
-
-        if (uploadedHash === currentHash) {
-          // 🎯 Une image identique existe déjà dans le dossier !
-          existingFileName = f;
-          break;
-        }
-      }
-    }
-
-    let finalAvatarUrl = '';
-
-    if (existingFileName) {
-      // 2. L'IMAGE EXISTE DÉJÀ : On supprime le fichier temporaire et on réutilise l'existante
-      fs.unlinkSync(tempFilePath);
-      finalAvatarUrl = `/img/${existingFileName}`;
-      console.log(`ℹ️ Image existante réutilisée : ${existingFileName}`);
-    } else {
-      // 3. L'IMAGE EST NOUVELLE : On renomme le fichier temporaire avec un nom définitif propre
-      const newFileName = `avatar-${uploadedHash.substring(0, 10)}${fileExt}`;
-      const finalFilePath = path.join(uploadDir, newFileName);
-
-      fs.renameSync(tempFilePath, finalFilePath);
-      finalAvatarUrl = `/img/${newFileName}`;
-      console.log(`✅ Nouvelle image enregistrée : ${newFileName}`);
-    }
-
-    // 4. Mise à jour du chemin en Base de Données
-    const sql = 'UPDATE users SET avatar_url = ? WHERE id = ?';
-    await db.query(sql, [finalAvatarUrl, user_id]);
+    // Multer stocke déjà l'image validée dans le dossier img avec un nom aléatoire.
+    // Garder ce nom évite les collisions et le remplacement d'un fichier partagé.
+    const fileName = path.basename(file.filename || file.path);
+    const finalAvatarUrl = `/img/${fileName}`;
+    await db.query('UPDATE users SET avatar_url = ? WHERE id = ?', [finalAvatarUrl, userId]);
 
     return res.status(200).json({
       success: true,
-      message: existingFileName ? 'Image existante réutilisée avec succès !' : 'Nouvelle photo enregistrée avec succès !',
+      message: 'Photo de profil enregistrée avec succès.',
       avatar_url: finalAvatarUrl
     });
 
   } catch (error) {
-    console.error('❌ ERREUR SERVEUR (chargeAvatar) :', error);
-
-    // En cas d'erreur, on nettoie le fichier temporaire
-    if (req.file && fs.existsSync(req.file.path)) {
-      fs.unlinkSync(req.file.path);
-    }
+    console.error('Erreur lors de l’enregistrement de l’avatar:', error.message);
+    if (file?.path && fs.existsSync(file.path)) fs.unlinkSync(file.path);
 
     return res.status(500).json({
       success: false,
-      message: 'Erreur lors du traitement de l\'avatar.'
+      message: 'Erreur lors de l’enregistrement de la photo.'
     });
   }
 };
@@ -2061,7 +2211,7 @@ exports.getChefServiceActivities = async (req, res, next) => {
     const status = String(req.query.status || '').trim();
     const category = String(req.query.category || '').trim();
     const search = String(req.query.search || '').trim().slice(0, 100);
-    const conditions = ["u.department = ?", "LOWER(TRIM(u.role)) = 'agent'"];
+    const conditions = ["u.department = ?", "LOWER(TRIM(u.role)) = 'agent'", "LOWER(TRIM(ra.status)) <> 'superseded'"];
     const params = [department];
     if (status === 'approval_pending') {
       conditions.push("LOWER(TRIM(dr.status)) = 'submitted' AND (dr.submitted_to = ? OR dr.submitted_to IS NULL)");
@@ -2177,11 +2327,11 @@ exports.decideChefServiceActivity = async (req, res, next) => {
     const activityId = Number.parseInt(req.params.activityId, 10);
     const decision = String(req.body?.decision || '').trim().toLowerCase();
     const reason = String(req.body?.reason || '').trim().slice(0, 2000);
-    if (!Number.isSafeInteger(activityId) || activityId < 1 || !['approved', 'rejected'].includes(decision)) {
+    if (!Number.isSafeInteger(activityId) || activityId < 1 || !['approved', 'rejected', 'request_changes'].includes(decision)) {
       return res.status(400).json({ success: false, message: 'Décision ou identifiant invalide.' });
     }
-    if (decision === 'rejected' && !reason) {
-      return res.status(400).json({ success: false, message: 'Un motif est requis pour rejeter une activité.' });
+    if (decision !== 'approved' && !reason) {
+      return res.status(400).json({ success: false, message: 'Un commentaire est requis pour cette décision.' });
     }
 
     const [result] = await db.query(
@@ -2190,20 +2340,93 @@ exports.decideChefServiceActivity = async (req, res, next) => {
          JOIN report_activities ra ON ra.daily_report_id = dr.id
           SET dr.status = ?, dr.reviewed_by = ?, dr.reviewed_at = NOW(), dr.review_comment = ?
         WHERE ra.id = ? AND u.department = ? AND LOWER(TRIM(u.role)) = 'agent'
+          AND LOWER(TRIM(ra.status)) <> 'superseded'
           AND LOWER(TRIM(dr.status)) = 'submitted'
           AND (dr.submitted_to = ? OR dr.submitted_to IS NULL)`,
-      [decision, req.user.id, decision === 'rejected' ? reason : null, activityId, department, req.user.id]
+      [decision === 'request_changes' ? 'changes_requested' : decision, req.user.id, decision === 'approved' ? null : reason, activityId, department, req.user.id]
     );
     if (result.affectedRows) {
+      const [reportRows] = await db.query(
+        `SELECT dr.id FROM daily_reports dr JOIN report_activities ra ON ra.daily_report_id=dr.id WHERE ra.id=? LIMIT 1`, [activityId]
+      );
+      if (reportRows.length) {
+        await db.query(
+          `INSERT INTO report_status_history (report_id, previous_status, new_status, comment, actor_id)
+           VALUES (?, 'submitted', ?, ?, ?)`,
+          [reportRows[0].id, decision === 'request_changes' ? 'changes_requested' : decision, reason || null, req.user.id]
+        );
+      }
       await notifications.notifyReportDecision(activityId, decision, reason);
     }
     if (!result.affectedRows) {
       return res.status(409).json({ success: false, message: 'Cette activité n’est plus en attente ou ne relève pas de votre département.' });
     }
-    return res.json({ success: true, message: decision === 'approved' ? 'Rapport approuvé.' : 'Rapport rejeté.', status: decision });
+    return res.json({ success: true, message: decision === 'approved' ? 'Rapport approuvé.' : decision === 'request_changes' ? 'Correction demandée à l’agent.' : 'Rapport rejeté.', status: decision === 'request_changes' ? 'changes_requested' : decision });
   } catch (error) {
     console.error('Erreur dans decideChefServiceActivity:', error);
     next(error);
+  }
+};
+
+exports.bulkApproveChefServiceReports = async (req, res, next) => {
+  const connection = await db.getConnection();
+  try {
+    const department = await getChefServiceDepartment(req);
+    if (!department) return res.status(403).json({ success: false, message: 'Accès réservé au chef de service de votre département.' });
+    const rawIds = req.body?.activityIds;
+    if (!Array.isArray(rawIds) || !rawIds.length || rawIds.length > 100 || rawIds.some(value => !/^\d+$/.test(String(value)))) {
+      return res.status(400).json({ success: false, message: 'Sélectionnez de 1 à 100 activités valides.' });
+    }
+    const ids = [...new Set(rawIds.map(Number))];
+    if (ids.some(value => !Number.isSafeInteger(value) || value < 1)) return res.status(400).json({ success: false, message: 'Identifiant d’activité invalide.' });
+    await connection.beginTransaction();
+    const [eligible] = await connection.query(
+      `SELECT DISTINCT dr.id AS reportId, dr.user_id AS userId
+         FROM report_activities ra JOIN daily_reports dr ON dr.id=ra.daily_report_id
+         JOIN users u ON u.id=dr.user_id
+        WHERE ra.id IN (?) AND u.department=? AND LOWER(TRIM(u.role))='agent'
+          AND LOWER(TRIM(ra.status))<>'superseded'
+          AND dr.status='submitted' AND (dr.submitted_to=? OR dr.submitted_to IS NULL)`,
+      [ids, department, req.user.id]
+    );
+    const [matched] = await connection.query(
+      `SELECT COUNT(DISTINCT ra.id) AS total
+         FROM report_activities ra JOIN daily_reports dr ON dr.id=ra.daily_report_id
+         JOIN users u ON u.id=dr.user_id
+        WHERE ra.id IN (?) AND u.department=? AND LOWER(TRIM(u.role))='agent'
+          AND LOWER(TRIM(ra.status))<>'superseded'
+          AND dr.status='submitted' AND (dr.submitted_to=? OR dr.submitted_to IS NULL)`,
+      [ids, department, req.user.id]
+    );
+    if (Number(matched[0]?.total || 0) !== ids.length) {
+      await connection.rollback();
+      return res.status(409).json({ success: false, message: 'La sélection contient un rapport déjà traité ou hors de votre département. Actualisez la liste.' });
+    }
+    const reportIds = eligible.map(row => row.reportId);
+    await connection.query(
+      `UPDATE daily_reports SET status='approved', reviewed_by=?, reviewed_at=NOW(), review_comment=NULL, updated_at=NOW()
+        WHERE id IN (?) AND status='submitted'`, [req.user.id, reportIds]
+    );
+    for (const reportId of reportIds) {
+      await connection.query(
+        `INSERT INTO report_status_history (report_id, previous_status, new_status, actor_id)
+         VALUES (?, 'submitted', 'approved', ?)`, [reportId, req.user.id]
+      );
+    }
+    await connection.commit();
+    for (const userId of new Set(eligible.map(row => row.userId))) {
+      await notifications.createNotification(userId, {
+        title: 'Rapport approuvé', body: 'Votre rapport a été approuvé par le chef de service.',
+        type: 'report_approved', link: '/html/Stat_dashb.html',
+      });
+    }
+    return res.json({ success: true, approvedReports: reportIds.length, message: `${reportIds.length} rapport(s) approuvé(s).` });
+  } catch (error) {
+    await connection.rollback();
+    console.error('Erreur validation en lot:', error.message);
+    return next(error);
+  } finally {
+    connection.release();
   }
 };
 

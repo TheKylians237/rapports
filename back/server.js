@@ -7,6 +7,8 @@ require('dotenv').config({ path: path.join(__dirname, '.env') });
 const authRoutes = require('./authRoutes');
 const dashRoutes = require('./dashRoutes');
 const activityAudit = require('./activityAudit');
+const dailyReminderService = require('./dailyReminderService');
+const maintenanceService = require('./maintenanceService');
 const db = require('./db');
 
 const app = express();
@@ -125,6 +127,13 @@ const HOST = process.env.HOST || '0.0.0.0';
 if (require.main === module) {
   app.listen(PORT, HOST, () => {
     console.log(`Serveur accessible sur http://${HOST}:${PORT} (localhost ou adresse IP du réseau local)`);
+    dailyReminderService.dispatchDailyReportReminders().catch(error => console.error('Rappels journaliers indisponibles:', error.message));
+    maintenanceService.runDailyMaintenance().catch(error => console.error('Maintenance quotidienne indisponible:', error.message));
+    const reminderTimer = setInterval(() => {
+      dailyReminderService.dispatchDailyReportReminders().catch(error => console.error('Rappels journaliers indisponibles:', error.message));
+      maintenanceService.runDailyMaintenance().catch(error => console.error('Maintenance quotidienne indisponible:', error.message));
+    }, 15 * 60 * 1000);
+    reminderTimer.unref();
   });
 }
 

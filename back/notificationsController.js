@@ -22,9 +22,9 @@ function formatDate(value) {
  * @returns {Promise<boolean>} true si la notification a été enregistrée.
  */
 async function createNotification(userId, { title, body = '', type = 'info', link = null } = {}) {
-  const id = Number.parseInt(userId, 10);
+  const id = String(userId == null ? '' : userId).trim();
   const safeTitle = String(title || '').trim().slice(0, MAX_TITLE);
-  if (!Number.isSafeInteger(id) || id < 1 || !safeTitle) return false;
+  if (!id || id.length > 36 || !safeTitle) return false;
   try {
     await db.execute(
       'INSERT INTO notifications (user_id, title, body, type, link) VALUES (?, ?, ?, ?, ?)',
@@ -106,19 +106,21 @@ async function notifyReportDecision(activityId, decision, reason) {
       `SELECT dr.user_id, dr.report_date
          FROM daily_reports dr
          JOIN report_activities ra ON ra.daily_report_id = dr.id
-        WHERE ra.id = ?
+        WHERE ra.id = ? AND LOWER(TRIM(ra.status)) <> 'superseded'
         LIMIT 1`,
       [id],
     );
     if (!rows.length) return;
-    const approved = String(decision).toLowerCase() === 'approved';
+    const normalizedDecision = String(decision).toLowerCase();
+    const approved = normalizedDecision === 'approved';
+    const correction = normalizedDecision === 'request_changes';
     const day = formatDate(rows[0].report_date);
     await createNotification(rows[0].user_id, {
-      title: approved ? 'Rapport approuvé' : 'Rapport rejeté',
+      title: approved ? 'Rapport approuvé' : correction ? 'Correction demandée' : 'Rapport rejeté',
       body: approved
         ? `Votre rapport du ${day} a été approuvé.`
-        : `Votre rapport du ${day} a été rejeté : ${String(reason || '').slice(0, 300)}`,
-      type: approved ? 'report_approved' : 'report_rejected',
+        : correction ? `Votre rapport du ${day} doit être corrigé : ${String(reason || '').slice(0, 300)}` : `Votre rapport du ${day} a été rejeté : ${String(reason || '').slice(0, 300)}`,
+      type: approved ? 'report_approved' : correction ? 'report_correction_requested' : 'report_rejected',
       link: '/html/Stat_dashb.html',
     });
   } catch (error) {

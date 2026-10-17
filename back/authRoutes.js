@@ -10,7 +10,7 @@ const bigManagerController = require('./bigManagerController');
 const notificationsController = require('./notificationsController');
 const activityAudit = require('./activityAudit');
 const loginLimit = rateLimit({ max: 8, scope: 'login', keyBy: req => req.body?.identity });
-const otpLimit = rateLimit({ max: 8, scope: 'otp', keyBy: req => req.body?.userId || req.body?.preAuthToken });
+const otpLimit = rateLimit({ max: 8, scope: 'otp', keyBy: req => req.body?.preAuthToken || req.body?.userId || req.body?.email });
 const recoveryLimit = rateLimit({ max: 4, scope: 'password-recovery', keyBy: req => req.body?.email || req.body?.userId });
 const registrationLimit = rateLimit({ max: 25 });
 const publicConfigLimit = rateLimit({ max: 120 });
@@ -34,6 +34,7 @@ router.post('/forgot-password', recoveryLimit, authController.forgotPassword);
 router.post('/reset-password', recoveryLimit, authController.resetPassword);
 router.post('/reset-otp', recoveryLimit, authController.resetOTP);
 router.post('/verify-otp', otpLimit, authController.verifyOTP);
+router.post('/logout', protect, authController.logout);
 
 
 // ============================================================================
@@ -46,10 +47,16 @@ router.post('/2fa/enable', protect, authController.verifyAndEnable2FA);
 
 // Rapports & Soumissions Agent
 router.get('/reports', protect, restrictTo('agent'), dashesController.getDashboardData);
+router.get('/reports/latest-activities', protect, restrictTo('agent'), dashesController.getLatestReportActivities);
+router.get('/agent/reminder-status', protect, restrictTo('agent'), dashesController.getAgentReminderStatus);
 router.post('/reports-store', protect, restrictTo('agent'), dashesController.storeReport);
+router.get('/agent/reports/:reportId/correction', protect, restrictTo('agent'), dashesController.getReportForCorrection);
+router.put('/agent/reports/:reportId/correction', protect, restrictTo('agent'), dashesController.resubmitCorrectedReport);
 router.post('/report-issues', protect, restrictTo('agent'), dashesController.storeReportIssue);
 router.get('/agent/my-proposals', protect, restrictTo('agent'), dashesController.getMyReportIssues);
 router.get('/agent/activities', protect, restrictTo('agent'), dashesController.getAgentActivitiesForProposal);
+router.get('/agent/assigned-issues', protect, restrictTo('agent'), dashesController.getMyAssignedIssues);
+router.patch('/agent/assigned-issues/:issueId', protect, restrictTo('agent'), dashesController.updateMyAssignedIssue);
 router.get('/agent/my-evaluations', protect, restrictTo('agent'), dashesController.getMyAgentEvaluations);
 router.get('/agent-stats', protect, restrictTo('agent'), dashesController.getAgentStats);
 router.post('/save-task', protect, restrictTo('agent'), dashesController.saveTask);
@@ -62,6 +69,7 @@ router.patch('/notifications/:id/read', protect, notificationsController.markNot
 // Gestion du Profil & Mot de passe
 router.get('/getprofile', protect, dashesController.getProfile);
 router.get('/activity-history', protect, activityAudit.getOwnHistory);
+router.get('/privacy/export', protect, activityAudit.exportOwnData);
 router.put('/profile', protect, dashesController.updateProfile);
 router.put('/change-password', protect, dashesController.changePassword);
 
@@ -99,6 +107,8 @@ router.delete('/admin/departments/:departmentId', protect, adminController.requi
 router.get('/admin/reports', protect, adminController.requireActiveAdmin, adminController.listReports);
 router.get('/admin/reviews', protect, adminController.requireActiveAdmin, adminController.listReviews);
 router.get('/admin/audit-logs', protect, adminController.requireActiveAdmin, adminController.listAuditLogs);
+router.get('/admin/sessions', protect, adminController.requireActiveAdmin, adminController.listSessions);
+router.patch('/admin/sessions/:sessionId/revoke', protect, adminController.requireActiveAdmin, adminController.revokeSession);
 router.get('/admin/retention', protect, adminController.requireActiveAdmin, adminController.getRetentionSettings);
 router.put('/admin/retention', protect, adminController.requireActiveAdmin, adminController.saveRetentionSettings);
 router.post('/admin/archives/run', protect, adminController.requireActiveAdmin, adminController.runArchive);
@@ -121,9 +131,11 @@ router.get(
 router.get('/chef-dashboard/evaluations', protect, restrictTo('chef_service'), dashesController.getChefServiceEvaluations);
 router.get('/chef-dashboard/rankings', protect, restrictTo('chef_service'), dashesController.getChefServiceAgentRankings);
 router.get('/chef-dashboard/proposals', protect, restrictTo('chef_service'), dashesController.getChefServiceReportIssues);
+router.patch('/chef-dashboard/proposals/:issueId/assignment', protect, restrictTo('chef_service'), dashesController.assignChefServiceIssue);
 router.patch('/chef-dashboard/proposals/:issueId/decision', protect, restrictTo('chef_service'), dashesController.decideChefServiceReportIssue);
 router.post('/chef-dashboard/agents/:agentId/evaluations', protect, restrictTo('chef_service'), dashesController.saveChefServiceAgentEvaluation);
 router.get('/chef-dashboard/activities', protect, restrictTo('chef_service'), dashesController.getChefServiceActivities);
+router.post('/chef-dashboard/activities/bulk-approve', protect, restrictTo('chef_service'), dashesController.bulkApproveChefServiceReports);
 router.get('/agent/department-chefs', protect, restrictTo('agent'), dashesController.getAgentDepartmentChefs);
 router.get('/department/colleagues', protect, dashesController.getDepartmentColleagues);
 router.get('/chef-dashboard/activities/:activityId', protect, restrictTo('chef_service'), dashesController.getChefServiceActivityDetails);

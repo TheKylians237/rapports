@@ -565,3 +565,24 @@ exports.getArchiveDetails = async(req,res,next)=>{
     return res.json({success:true,archive:{...rows[0],payload,label:archiveTypes[rows[0].entityType]||rows[0].entityType}});
   }catch(error){next(error);}
 };
+
+exports.listSessions = async(req,res,next)=>{
+  try {
+    const [rows] = await db.query(`SELECT s.id,s.user_id AS userId,s.ip_address AS ipAddress,
+      s.user_agent AS userAgent,s.created_at AS createdAt,s.last_seen AS lastSeen,s.expires_at AS expiresAt,
+      u.username,u.last_name AS fullName,u.email,u.role
+      FROM user_sessions s JOIN users u ON u.id=s.user_id
+      WHERE s.revoked_at IS NULL AND s.expires_at>NOW()
+      ORDER BY s.last_seen DESC LIMIT 500`);
+    return res.json({success:true,sessions:rows});
+  } catch(error){next(error);}
+};
+
+exports.revokeSession = async(req,res,next)=>{
+  try {
+    const [result] = await db.query('UPDATE user_sessions SET revoked_at=NOW() WHERE id=? AND revoked_at IS NULL',[req.params.sessionId]);
+    if(!result.affectedRows)return res.status(404).json({success:false,message:'Session introuvable ou déjà terminée.'});
+    await audit(req,'SESSION_REVOKED',req.params.sessionId,{});
+    return res.json({success:true,message:'Session déconnectée.'});
+  } catch(error){next(error);}
+};

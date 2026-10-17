@@ -13,6 +13,33 @@ const JWT_SECRET = require('./jwtConfig');
 const hashRecoveryCode = code => crypto.createHmac('sha256', JWT_SECRET).update(String(code)).digest('hex');
 const { isValidEmail, isValidPassword } = require('./validators');
 
+function sessionLifetime(rememberMe = false) {
+  const raw = String(rememberMe ? (process.env.REMEMBERED_SESSION_DURATION || '30d') : (process.env.SESSION_DURATION || '8h')).trim().toLowerCase();
+  const match = raw.match(/^(\d{1,4})(m|h|d)$/);
+  if (!match) return { jwtDuration: '8h', milliseconds: 8 * 60 * 60 * 1000 };
+  const value = Number(match[1]);
+  const multiplier = match[2] === 'm' ? 60000 : match[2] === 'h' ? 3600000 : 86400000;
+  const milliseconds = value * multiplier;
+  if (milliseconds < 15 * 60000 || milliseconds > 30 * 86400000) return { jwtDuration: '8h', milliseconds: 8 * 60 * 60 * 1000 };
+  return { jwtDuration: raw, milliseconds };
+}
+
+async function createAuthenticatedSession(user, req, rememberMe = false) {
+  const sessionId = crypto.randomUUID();
+  const lifetime = sessionLifetime(rememberMe);
+  const expiresAt = new Date(Date.now() + lifetime.milliseconds);
+  await db.execute(
+    'INSERT INTO user_sessions (id, user_id, ip_address, user_agent, expires_at) VALUES (?, ?, ?, ?, ?)',
+    [sessionId, user.id, req.ip || null, String(req.headers['user-agent'] || '').slice(0, 255), expiresAt],
+  );
+  const token = jwt.sign(
+    { id: user.id, username: user.username, role: user.role, email: user.email, jti: sessionId },
+    JWT_SECRET,
+    { expiresIn: lifetime.jwtDuration, algorithm: 'HS256' },
+  );
+  return token;
+}
+
 // ==========================================
 // 1. INSCRIPTION & CONNEXION
 // ==========================================
@@ -179,7 +206,7 @@ exports.login = async (req, res) => {
         const jwtSecret = JWT_SECRET;
         
         const tempToken = jwt.sign(
-            { id: user.id, isTemp2FA: true },
+            { id: user.id, isTemp2FA: true, rememberMe: !!rememberMe },
             jwtSecret,
             { expiresIn: '10m' }
         );
@@ -309,11 +336,7 @@ exports.validate2FA = async (req, res) => {
     }
 
     // Token final
-    const token = jwt.sign(
-      { id: user.id, role: user.role, email: user.email },
-      JWT_SECRET,
-      { expiresIn: '8h' }
-    );
+    const token = await createAuthenticatedSession(user, req);
 
     res.json({
       token,
@@ -326,14 +349,19 @@ exports.validate2FA = async (req, res) => {
 };
 
 exports.verify2FA = async (req, res) => {
-    const userId = String(req.body?.userId || '').trim();
+    const preAuthToken = String(req.body?.preAuthToken || '');
     const code = String(req.body?.code || '').trim();
 
-    if (!userId || !/^\d{6}$/.test(code)) {
+    if (!preAuthToken || !/^\d{6}$/.test(code)) {
         return res.status(400).json({ success: false, message: "Données incomplètes." });
     }
 
     try {
+        const decoded = jwt.verify(preAuthToken, JWT_SECRET, { algorithms: ['HS256'] });
+        if (!decoded.isTemp2FA || !decoded.id) {
+            return res.status(401).json({ success: false, message: 'Session de vérification invalide.' });
+        }
+        const userId = String(decoded.id);
         // Vérification de l'utilisateur, du code et de l'expiration
         const codeHash = hashRecoveryCode(code);
         const [rows] = await db.execute(
@@ -352,11 +380,7 @@ exports.verify2FA = async (req, res) => {
         if (!consumed.affectedRows) return res.status(401).json({ success: false, message: 'Code OTP déjà utilisé ou expiré.' });
 
         // Génération du Token JWT définitif avec le RÔLE
-        const token = jwt.sign(
-            { id: user.id, username: user.username, role: user.role },
-            JWT_SECRET,
-            { expiresIn: '24h' }
-        );
+        const token = await createAuthenticatedSession(user, req, decoded.rememberMe === true);
 
         return res.status(200).json({
             success: true,
@@ -368,9 +392,22 @@ exports.verify2FA = async (req, res) => {
         });
 
     } catch (error) {
-        console.error(error);
-        return res.status(500).json({ success: false, message: "Erreur serveur." });
+        if (['JsonWebTokenError', 'TokenExpiredError', 'NotBeforeError'].includes(error.name)) {
+            return res.status(401).json({ success: false, message: 'Session de vérification expirée. Reconnectez-vous.' });
+        }
+        console.error('Erreur de validation du code 2FA:', error.message);
+        return res.status(500).json({ success: false, message: 'Erreur serveur lors de la validation du code.' });
     }
+};
+
+exports.logout = async (req, res) => {
+  try {
+    if (req.user?.jti) await db.execute('UPDATE user_sessions SET revoked_at=NOW() WHERE id=? AND user_id=? AND revoked_at IS NULL', [req.user.jti, req.user.id]);
+    return res.json({ success: true, message: 'Session terminée.' });
+  } catch (error) {
+    console.error('Déconnexion session:', error.message);
+    return res.status(500).json({ success: false, message: 'Impossible de fermer la session.' });
+  }
 };
 
 exports.resend2FA = async (req, res) => {
