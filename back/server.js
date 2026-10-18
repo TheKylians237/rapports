@@ -11,6 +11,7 @@ const dashRoutes = require('./dashRoutes');
 const activityAudit = require('./activityAudit');
 const dailyReminderService = require('./dailyReminderService');
 const maintenanceService = require('./maintenanceService');
+const activityLogArchiveService = require('./activityLogArchiveService');
 const monthlySummaryService = require('./monthlySummaryService');
 const internetAccess = require('./internetAccess');
 
@@ -144,10 +145,12 @@ if (require.main === module) {
     console.log(`Serveur accessible sur ${protocol}://${HOST}:${port} (localhost ou adresse IP du réseau local)`);
     dailyReminderService.dispatchDailyReportReminders().catch(error => console.error('Rappels journaliers indisponibles:', error.message));
     maintenanceService.runDailyMaintenance().catch(error => console.error('Maintenance quotidienne indisponible:', error.message));
+    activityLogArchiveService.archivePendingWeeks().catch(error => console.error('Archivage hebdomadaire des journaux indisponible:', error.message));
     monthlySummaryService.sendMonthlySummary().catch(error => console.error('Synthèse mensuelle indisponible:', error.message));
     const reminderTimer = setInterval(() => {
       dailyReminderService.dispatchDailyReportReminders().catch(error => console.error('Rappels journaliers indisponibles:', error.message));
       maintenanceService.runDailyMaintenance().catch(error => console.error('Maintenance quotidienne indisponible:', error.message));
+      activityLogArchiveService.archivePendingWeeks().catch(error => console.error('Archivage hebdomadaire des journaux indisponible:', error.message));
       monthlySummaryService.sendMonthlySummary().catch(error => console.error('Synthèse mensuelle indisponible:', error.message));
     }, 15 * 60 * 1000);
     reminderTimer.unref();

@@ -1,5 +1,6 @@
 const db = require('./db');
 const activityAudit = require('./activityAudit');
+const activityLogArchiveService = require('./activityLogArchiveService');
 
 let lastDailyRun = '';
 
@@ -17,6 +18,8 @@ async function purgeExpiredSecrets() {
 async function purgeOldAuditLogs() {
   const days = retentionDays();
   await activityAudit.ensureTable();
+  // L’archive hebdomadaire doit réussir avant toute purge de journaux.
+  await activityLogArchiveService.archivePendingWeeks();
   await db.query(`DELETE FROM activity_logs WHERE created_at < DATE_SUB(NOW(), INTERVAL ${days} DAY)`);
   const [[table]] = await db.query(
     `SELECT COUNT(*) AS found FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='admin_audit_logs'`
