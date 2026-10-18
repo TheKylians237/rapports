@@ -74,6 +74,17 @@ test('parcours métier : les managers accèdent au tableau chef de service prév
   }
 });
 
+test('les fonctions déléguées au chef sont refusées au Big Manager', () => {
+  for (const role of ['chef_service', 'chef_de_service', 'manager', 'admin']) {
+    assert.equal(authorize(role, 'admin', 'chef_service').next, true, `rôle ${role}`);
+  }
+  for (const role of ['big_manager', 'agent']) {
+    const result = authorize(role, 'admin', 'chef_service');
+    assert.equal(result.next, false, `rôle ${role}`);
+    assert.equal(result.status, 403, `rôle ${role}`);
+  }
+});
+
 test('une délégation active donne accès au module chef uniquement quand elle a été vérifiée en base', () => {
   const req={user:{id:'deputy',role:'agent',delegatedPrincipalId:'principal'}};
   const result={next:false,status:null};

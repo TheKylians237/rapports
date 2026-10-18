@@ -3,17 +3,12 @@ const dns = require('dns').promises;
 const https = require('https');
 const net = require('net');
 const db = require('./db');
+const { isPublicIp } = require('./ipAddress');
 
-function isPublicAddress(address){
-  const family=net.isIP(address);
-  if(family===4){const p=address.split('.').map(Number);return !(p[0]===0||p[0]===10||p[0]===127||p[0]>=224||(p[0]===100&&p[1]>=64&&p[1]<=127)||(p[0]===169&&p[1]===254)||(p[0]===172&&p[1]>=16&&p[1]<=31)||(p[0]===192&&p[1]===168)||(p[0]===192&&p[1]===0)||(p[0]===192&&p[1]===88&&p[2]===99)||(p[0]===198&&(p[1]===18||p[1]===19||p[1]===51&&p[2]===100))||(p[0]===203&&p[1]===0&&p[2]===113));}
-  if(family===6){const v=address.toLowerCase();return !(v==='::1'||v==='::'||v.startsWith('fc')||v.startsWith('fd')||v.startsWith('fe8')||v.startsWith('fe9')||v.startsWith('fea')||v.startsWith('feb')||v.startsWith('::ffff:')||!/^2[0-9a-f]{3}:/.test(v));}
-  return false;
-}
 async function resolvePublicHost(hostname){
-  if(net.isIP(hostname)) {if(!isPublicAddress(hostname))throw new Error('L’adresse de webhook doit être publique.');return [{address:hostname,family:net.isIP(hostname)}];}
+  if(net.isIP(hostname)) {if(!isPublicIp(hostname))throw new Error('L’adresse de webhook doit être publique.');return [{address:hostname,family:net.isIP(hostname)}];}
   const addresses=await dns.lookup(hostname,{all:true,verbatim:true});
-  if(!addresses.length||addresses.some(item=>!isPublicAddress(item.address)))throw new Error('Le domaine du webhook doit résoudre uniquement vers des adresses publiques.');
+  if(!addresses.length||addresses.some(item=>!isPublicIp(item.address)))throw new Error('Le domaine du webhook doit résoudre uniquement vers des adresses publiques.');
   return addresses;
 }
 function key(){const secret=process.env.WEBHOOK_ENCRYPTION_KEY||process.env.JWT_SECRET||'';if(secret.length<32)throw new Error('Clé de chiffrement des webhooks invalide.');return crypto.createHash('sha256').update(`webhook:${secret}`).digest();}
@@ -27,7 +22,7 @@ async function sendPinned(url,addresses,body,signature,eventId,timestamp){
   });
 }
 exports.validateEndpoint=async value=>{
-  let url;try{url=new URL(value);}catch(_){throw new Error('URL de webhook invalide.');}
+  let url;try{url=new URL(value);}catch{throw new Error('URL de webhook invalide.');}
   const hostname=url.hostname.replace(/^\[|\]$/g,'').toLowerCase();
   if(url.protocol!=='https:'||url.username||url.password||url.port&&url.port!=='443'||hostname==='localhost'||hostname.endsWith('.local')||hostname.endsWith('.internal'))throw new Error('Un webhook doit utiliser HTTPS public sur le port 443.');
   return {url:url.toString(),addresses:await resolvePublicHost(hostname)};

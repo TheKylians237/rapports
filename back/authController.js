@@ -316,7 +316,7 @@ exports.validate2FA = async (req, res) => {
     let backupCodes = [];
     try {
       backupCodes = user.backup_codes ? JSON.parse(user.backup_codes) : [];
-    } catch (_) {}
+    } catch {}
     if (!Array.isArray(backupCodes)) backupCodes = [];
 
     // Les codes de secours sont stockés hachés ; on tolère l'ancien format en clair.
@@ -331,8 +331,13 @@ exports.validate2FA = async (req, res) => {
 
     // Si code de secours utilisé, le supprimer de la liste
     if (matchedBackup) {
+      const storedBackupCodes = user.backup_codes;
       backupCodes = backupCodes.filter(c => c !== matchedBackup);
-      await pool.query('UPDATE users SET backup_codes = ? WHERE id = ?', [JSON.stringify(backupCodes), user.id]);
+      const [consumed] = await pool.query(
+        'UPDATE users SET backup_codes = ? WHERE id = ? AND backup_codes = ?',
+        [JSON.stringify(backupCodes), user.id, storedBackupCodes]
+      );
+      if (!consumed.affectedRows) return res.status(401).json({ message: 'Code de secours déjà utilisé. Utilisez un autre code.' });
     }
 
     // Token final
@@ -343,7 +348,7 @@ exports.validate2FA = async (req, res) => {
       user: { userId: user.id, username: user.username, email: user.email, role: user.role }
     });
     console.log('L’enregistrement du rapport :', user.id);
-  } catch (error) {
+  } catch {
     res.status(401).json({ message: 'Session expirée ou invalide.' });
   }
 };
@@ -508,6 +513,7 @@ exports.resetPassword = async (req, res) => {
       return res.status(400).json({ message: 'Compte introuvable.' });
     }
     await connection.query('DELETE FROM password_resets WHERE user_id = ?', [userId]);
+    await connection.query('UPDATE user_sessions SET revoked_at=NOW() WHERE user_id=? AND revoked_at IS NULL', [userId]);
     await connection.commit();
     res.json({ message: 'Mot de passe réinitialisé avec succès.' });
   } catch (error) {

@@ -6,25 +6,21 @@ const fs = require('fs');
 const { isValidPassword, isValidIsoDate, PASSWORD_MIN_LENGTH } = require('./validators');
 const notifications = require('./notificationsController');
 const webhookService = require('./webhookService');
+const chefSynthesis = require('./chefSynthesis');
 
-
-
-function ObtenirTempsCompact() {
-  const now = new Date();
-  
-  const temps = now.getFullYear().toString() +
-    String(now.getMonth() + 1).padStart(2, '0') +
-    String(now.getDate()).padStart(2, '0') +
-    String(now.getHours()).padStart(2, '0') +
-    String(now.getMinutes()).padStart(2, '0') +
-    String(now.getSeconds()).padStart(2, '0');
-
-  return temps;
+let reportStatusHistoryAvailable;
+async function writeReportStatusHistory(connection, { reportId, previousStatus = null, newStatus, comment = null, actorId = null }) {
+  if (reportStatusHistoryAvailable === undefined) {
+    const [tables] = await connection.query("SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='report_status_history'");
+    reportStatusHistoryAvailable = tables.length > 0;
+  }
+  if (!reportStatusHistoryAvailable) return false;
+  await connection.query(
+    'INSERT INTO report_status_history (report_id,previous_status,new_status,comment,actor_id) VALUES(?,?,?,?,?)',
+    [reportId, previousStatus, newStatus, comment, actorId],
+  );
+  return true;
 }
-
-// Exemple d'utilisation :
-const temps = ObtenirTempsCompact();
- // Résultat : "20261006154437"
 
 
 /**
@@ -151,8 +147,8 @@ exports.getLatestReportActivities = async (req, res) => {
 
 exports.getAgentReminderStatus = async (req, res) => {
   try {
-    const configuredHour = Number.parseInt(process.env.DAILY_REPORT_REMINDER_HOUR || '18', 10);
-    const hour = Number.isInteger(configuredHour) && configuredHour >= 0 && configuredHour <= 23 ? configuredHour : 18;
+    const configuredHour = Number.parseInt(process.env.DAILY_REPORT_DEADLINE_HOUR || process.env.DAILY_REPORT_REMINDER_HOUR || '17', 10);
+    const hour = Number.isInteger(configuredHour) && configuredHour >= 0 && configuredHour <= 23 ? configuredHour : 17;
     const [rows] = await db.query(
       'SELECT COUNT(*) AS submitted FROM daily_reports WHERE user_id=? AND report_date=CURDATE()', [req.user.id]
     );
@@ -179,10 +175,7 @@ const createCanonicalDailyReport = async ({ userId, submittedTo = null, reportDa
        VALUES (?, ?, ?, ?, ?, 'submitted', ?, ?, ?, NOW(), NOW())`,
       [reportId, userId, submittedTo, reportDate, totalHours, nextDayTargets || null, comments || null, clientSubmissionId]
     );
-    await connection.execute(
-      `INSERT INTO report_status_history (report_id, previous_status, new_status, comment, actor_id)
-       VALUES (?, NULL, 'submitted', NULL, ?)`, [reportId, userId]
-    );
+    await writeReportStatusHistory(connection,{reportId,newStatus:'submitted',actorId:userId});
     for (const activity of activities) {
       await connection.execute(
         `INSERT INTO report_activities
@@ -200,6 +193,29 @@ const createCanonicalDailyReport = async ({ userId, submittedTo = null, reportDa
     connection.release();
   }
 };
+
+// Le destinataire est choisi par le serveur à partir du service de l’agent.
+// Un chef de service est prioritaire; à défaut, le manager actif est retenu par ordre stable.
+async function resolveReportRecipient(connection, userId, department, preferredId = null) {
+  if (preferredId) {
+    const [preferred] = await connection.query(
+      `SELECT id FROM users WHERE id=? AND department=? AND is_active=1
+        AND LOWER(REPLACE(REPLACE(TRIM(role),' ','_'),'-','_')) IN ('manager','chef_service','chef_de_service','chef') LIMIT 1`,
+      [preferredId, department],
+    );
+    if (preferred.length) return preferred[0].id;
+  }
+  const [rows] = await connection.query(
+    `SELECT manager.id FROM users agent JOIN users manager ON manager.department=agent.department
+      WHERE agent.id=? AND agent.is_active=1 AND LOWER(TRIM(agent.role))='agent' AND manager.is_active=1
+        AND LOWER(REPLACE(REPLACE(TRIM(manager.role),' ','_'),'-','_')) IN ('chef_service','chef_de_service','chef','manager')
+      ORDER BY CASE LOWER(REPLACE(REPLACE(TRIM(manager.role),' ','_'),'-','_'))
+        WHEN 'chef_service' THEN 0 WHEN 'chef_de_service' THEN 1 WHEN 'chef' THEN 2 ELSE 3 END,
+        manager.last_name,manager.username LIMIT 1`,
+    [userId],
+  );
+  return rows[0]?.id || null;
+}
 
 exports.getReportForCorrection = async (req, res) => {
   try {
@@ -225,7 +241,6 @@ exports.resubmitCorrectedReport = async (req, res) => {
   const connection = await db.getConnection();
   try {
     const reportId = String(req.params.reportId || '').trim();
-    const submittedTo = String(req.body?.submitted_to || '').trim();
     const activities = Array.isArray(req.body?.activities) ? req.body.activities.slice(0, 50).map(activity => ({
       description: String(activity.description || '').trim().slice(0, 255),
       objectives: String(activity.objectives || '').trim().slice(0, 5000),
@@ -233,24 +248,20 @@ exports.resubmitCorrectedReport = async (req, res) => {
       category: String(activity.category || 'Autre').trim().slice(0, 100),
       hours: Number(activity.hours),
     })) : [];
-    if (!submittedTo || !activities.length || activities.some(activity => !activity.description || !Number.isFinite(activity.hours) || activity.hours <= 0 || activity.hours > 24)) {
-      return res.status(400).json({ success: false, message: 'Vérifiez le destinataire, les descriptions et les durées des activités.' });
+    if (!activities.length || activities.some(activity => !activity.description || !Number.isFinite(activity.hours) || activity.hours <= 0 || activity.hours > 24)) {
+      return res.status(400).json({ success: false, message: 'Vérifiez les descriptions et les durées des activités.' });
     }
     await connection.beginTransaction();
     const [reports] = await connection.query(
-      `SELECT dr.id, dr.status, dr.report_date, dr.review_comment, u.department
+      `SELECT dr.id, dr.status, dr.report_date, dr.review_comment, dr.submitted_to, u.department
          FROM daily_reports dr JOIN users u ON u.id = dr.user_id
         WHERE dr.id = ? AND dr.user_id = ? FOR UPDATE`, [reportId, req.user.id]
     );
     if (!reports.length) { await connection.rollback(); return res.status(404).json({ success: false, message: 'Rapport introuvable.' }); }
     const report = reports[0];
     if (report.status !== 'changes_requested') { await connection.rollback(); return res.status(409).json({ success: false, message: 'Ce rapport ne demande plus de correction.' }); }
-    const [recipient] = await connection.query(
-      `SELECT id FROM users WHERE id = ? AND department = ? AND is_active = 1
-        AND LOWER(REPLACE(REPLACE(TRIM(role), ' ', '_'), '-', '_')) IN ('manager','chef_service','chef_de_service','chef') LIMIT 1`,
-      [submittedTo, report.department]
-    );
-    if (!recipient.length) { await connection.rollback(); return res.status(400).json({ success: false, message: 'Choisissez un chef de service actif de votre département.' }); }
+    const submittedTo = await resolveReportRecipient(connection, req.user.id, report.department, report.submitted_to);
+    if (!submittedTo) { await connection.rollback(); return res.status(409).json({ success: false, message: 'Aucun chef de service actif n’est configuré pour votre département.' }); }
     const totalHours = activities.reduce((sum, activity) => sum + activity.hours, 0);
     if (totalHours > 24) { await connection.rollback(); return res.status(400).json({ success: false, message: 'Le total des activités ne peut pas dépasser 24 heures.' }); }
     const [oldActivities] = await connection.query(
@@ -281,10 +292,7 @@ exports.resubmitCorrectedReport = async (req, res) => {
         WHERE id = ?`,
       [submittedTo, totalHours, String(req.body?.general_comments || '').slice(0, 5000), String(req.body?.next_day_targets || '').slice(0, 5000), reportId]
     );
-    await connection.query(
-      `INSERT INTO report_status_history (report_id, previous_status, new_status, comment, actor_id)
-       VALUES (?, 'changes_requested', 'submitted', ?, ?)`, [reportId, report.review_comment || null, req.user.id]
-    );
+    await writeReportStatusHistory(connection,{reportId,previousStatus:'changes_requested',newStatus:'submitted',comment:report.review_comment||null,actorId:req.user.id});
     await connection.commit();
     await notifications.createNotification(submittedTo, {
       title: 'Rapport corrigé et resoumis', body: `Un rapport du ${formatSqlDate(report.report_date)} a été resoumis après correction.`,
@@ -303,7 +311,7 @@ exports.resubmitCorrectedReport = async (req, res) => {
 exports.storeReport = async (req, res) => {
   try {
     const userId = req.user?.id;
-    const { report_date, date, submitted_to: submittedTo, manager_id: managerId, general_comments: comments = '', next_day_targets: nextDayTargets = '', activities = [] } = req.body;
+    const { report_date, date, general_comments: comments = '', next_day_targets: nextDayTargets = '', activities = [] } = req.body;
     const now = new Date();
     const localToday = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
     const reportDate = report_date || date || localToday;
@@ -313,19 +321,10 @@ exports.storeReport = async (req, res) => {
     if (!userId) return res.status(401).json({ success: false, message: 'Session utilisateur invalide.' });
     const [existing] = await db.query('SELECT id FROM daily_reports WHERE user_id=? AND client_submission_id=? LIMIT 1', [userId, clientSubmissionId]);
     if (existing.length) return res.status(200).json({ success: true, message: 'Rapport déjà synchronisé.', report_id: existing[0].id, reportId: existing[0].id, duplicate: true });
-    const recipientId = String(submittedTo || managerId || '').trim();
-    if (!recipientId) return res.status(400).json({ success: false, message: 'Choisissez le chef de service destinataire du rapport.' });
-    const [recipientRows] = await db.query(
-      `SELECT manager.id
-         FROM users agent
-         JOIN users manager ON manager.department = agent.department
-        WHERE agent.id = ? AND LOWER(TRIM(agent.role)) = 'agent'
-          AND agent.is_active = 1 AND manager.id = ? AND manager.is_active = 1
-          AND LOWER(REPLACE(REPLACE(TRIM(manager.role), ' ', '_'), '-', '_')) IN ('manager','chef_service','chef_de_service','chef')
-        LIMIT 1`,
-      [userId, recipientId]
-    );
-    if (!recipientRows.length) return res.status(400).json({ success: false, message: 'Le destinataire doit être un chef de service actif de votre département.' });
+    const [agentRows] = await db.query("SELECT department FROM users WHERE id=? AND is_active=1 AND LOWER(TRIM(role))='agent' LIMIT 1", [userId]);
+    if (!agentRows.length) return res.status(403).json({ success: false, message: 'Seul un agent actif peut transmettre un rapport.' });
+    const recipientId = await resolveReportRecipient(db, userId, agentRows[0].department);
+    if (!recipientId) return res.status(409).json({ success: false, message: 'Aucun chef de service actif n’est configuré pour votre département.' });
     if (!/^\d{4}-\d{2}-\d{2}$/.test(reportDate)) return res.status(400).json({ success: false, message: 'Date de rapport invalide.' });
     if (!Array.isArray(activities) || activities.length === 0) return res.status(400).json({ success: false, message: 'Ajoutez au moins une activité au rapport.' });
     const normalizedActivities = activities.map((activity) => ({
@@ -844,7 +843,12 @@ exports.changePassword = async (req, res) => {
     const newPasswordHash = await bcrypt.hash(newPassword, saltRounds);
 
     // 4. Mise à jour dans la base de données
-    await db.query('UPDATE users SET password_hash = ? WHERE id = ?', [newPasswordHash, user_id]);
+    await db.query('UPDATE users SET password_hash = ?, two_factor_code = NULL, two_factor_expires = NULL WHERE id = ?', [newPasswordHash, user_id]);
+    if (req.user?.jti) {
+      await db.query('UPDATE user_sessions SET revoked_at=NOW() WHERE user_id=? AND revoked_at IS NULL AND id<>?', [user_id, req.user.jti]);
+    } else {
+      await db.query('UPDATE user_sessions SET revoked_at=NOW() WHERE user_id=? AND revoked_at IS NULL', [user_id]);
+    }
 
     return res.status(200).json({
       success: true,
@@ -871,7 +875,19 @@ exports.chargeAvatar = async (req, res) => {
     // Garder ce nom évite les collisions et le remplacement d'un fichier partagé.
     const fileName = path.basename(file.filename || file.path);
     const finalAvatarUrl = `/img/${fileName}`;
+    const [currentRows] = await db.query('SELECT avatar_url AS avatarUrl FROM users WHERE id=? LIMIT 1', [userId]);
+    if (!currentRows.length) {
+      if (file?.path && fs.existsSync(file.path)) fs.unlinkSync(file.path);
+      return res.status(404).json({ success: false, message: 'Compte utilisateur introuvable.' });
+    }
     await db.query('UPDATE users SET avatar_url = ? WHERE id = ?', [finalAvatarUrl, userId]);
+    const previousUrl = String(currentRows[0].avatarUrl || '');
+    const previousName = previousUrl.startsWith('/img/') ? path.basename(previousUrl) : '';
+    if (/^upload-[a-f0-9]{32}\.(?:jpg|png|webp)$/.test(previousName) && previousName !== fileName) {
+      try { fs.unlinkSync(path.join(__dirname, '../img', previousName)); } catch (cleanupError) {
+        if (cleanupError.code !== 'ENOENT') console.warn('Nettoyage de l’ancien avatar impossible:', cleanupError.message);
+      }
+    }
 
     return res.status(200).json({
       success: true,
@@ -2043,43 +2059,10 @@ exports.getChefServiceSynthesis = async (req, res, next) => {
     const department = await getChefServiceDepartment(req);
     if (!department) return res.status(403).json({ success: false, message: 'Accès réservé au chef de service.' });
 
-    const period = String(req.query.period || 'month').trim().toLowerCase();
-    const validPeriods = ['day', 'week', 'month', 'quarter', 'year', 'custom'];
-    if (!validPeriods.includes(period)) return res.status(400).json({ success: false, message: 'Période invalide.' });
-
-    const dateKey = date => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
-    const isValidDate = value => {
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(value || '')) return false;
-      const [year, month, day] = value.split('-').map(Number);
-      const date = new Date(year, month - 1, day);
-      return date.getFullYear() === year && date.getMonth() === month - 1 && date.getDate() === day;
-    };
-    const today = new Date();
-    let startDate;
-    let endDate;
-    if (period === 'custom') {
-      startDate = String(req.query.startDate || '').trim();
-      endDate = String(req.query.endDate || '').trim();
-      if (!isValidDate(startDate) || !isValidDate(endDate) || startDate > endDate) {
-        return res.status(400).json({ success: false, message: 'Sélectionnez des dates valides et cohérentes.' });
-      }
-    } else {
-      endDate = dateKey(today);
-      const start = new Date(today.getFullYear(), today.getMonth(), today.getDate());
-      if (period === 'day') { /* même date de début et de fin */ }
-      if (period === 'week') {
-        const dayOfWeek = (start.getDay() + 6) % 7;
-        start.setDate(start.getDate() - dayOfWeek);
-      }
-      if (period === 'month') start.setDate(1);
-      if (period === 'quarter') start.setMonth(Math.floor(start.getMonth() / 3) * 3, 1);
-      if (period === 'year') start.setMonth(0, 1);
-      startDate = dateKey(start);
-    }
-
-    let agentIds = req.query.agentIds || [];
-    if (!Array.isArray(agentIds)) agentIds = String(agentIds).split(',');
-    agentIds = [...new Set(agentIds.map(id => String(id).trim()).filter(Boolean))];
+    const dateRange = chefSynthesis.resolveDateRange(req.query);
+    if (dateRange.error) return res.status(400).json({ success: false, message: dateRange.error });
+    const { period, startDate, endDate } = dateRange;
+    const agentIds = chefSynthesis.parseAgentIds(req.query.agentIds);
     if (agentIds.length > 100) return res.status(400).json({ success: false, message: 'La sélection est limitée à 100 agents.' });
 
     const [departmentAgents] = await db.query(
@@ -2088,21 +2071,22 @@ exports.getChefServiceSynthesis = async (req, res, next) => {
         WHERE department = ? AND is_active = 1 AND LOWER(TRIM(role)) = 'agent'
         ORDER BY last_name, username`, [department]
     );
-    const selectedAgents = agentIds.length
-      ? departmentAgents.filter(agent => agentIds.includes(String(agent.id)))
-      : departmentAgents;
+    const selectedAgents = chefSynthesis.selectAgents(departmentAgents, agentIds);
     if (agentIds.length && selectedAgents.length !== agentIds.length) {
       return res.status(400).json({ success: false, message: 'La sélection contient un agent inactif ou extérieur à votre département.' });
     }
+
     const selectedIds = selectedAgents.map(agent => agent.id);
     if (!selectedIds.length) {
-      const emptyMetrics = { reportCount: 0, approvedReports: 0, pendingReports: 0, rejectedReports: 0, activitiesTotal: 0, completedActivities: 0, pendingActivities: 0, totalHours: 0, activeAgents: 0, selectedAgents: 0, completionRate: 0, approvalRate: 0 };
       const scope = agentIds.length ? 'la sélection' : `le département ${department}`;
-      return res.json({ success: true, department, period, startDate, endDate, scope, metrics: emptyMetrics, categories: [], narrative: `Aucun agent actif n’est actuellement rattaché à ${scope}.` });
+      return res.json({
+        success: true, department, period, startDate, endDate, scope,
+        metrics: chefSynthesis.emptyMetrics(), categories: [],
+        narrative: `Aucun agent actif n’est actuellement rattaché à ${scope}.`,
+      });
     }
 
     const placeholders = selectedIds.map(() => '?').join(', ');
-    const params = [startDate, endDate, ...selectedIds, department];
     const [metricRows] = await db.query(
       `SELECT COUNT(DISTINCT dr.id) AS reportCount,
               COUNT(ra.id) AS activitiesTotal,
@@ -2117,26 +2101,9 @@ exports.getChefServiceSynthesis = async (req, res, next) => {
          LEFT JOIN daily_reports dr ON dr.user_id = u.id AND dr.report_date BETWEEN ? AND ?
          LEFT JOIN report_activities ra ON ra.daily_report_id = dr.id
         WHERE u.id IN (${placeholders}) AND u.department = ? AND LOWER(TRIM(u.role)) = 'agent'`,
-      params
+      [startDate, endDate, ...selectedIds, department]
     );
-    const metrics = metricRows[0] || {};
-    const completionRate = Number(metrics.activitiesTotal) ? Number(metrics.completedActivities || 0) / Number(metrics.activitiesTotal) * 100 : 0;
-    const approvalRate = Number(metrics.reportCount) ? Number(metrics.approvedReports || 0) / Number(metrics.reportCount) * 100 : 0;
-    const normalizedMetrics = {
-      reportCount: Number(metrics.reportCount || 0),
-      approvedReports: Number(metrics.approvedReports || 0),
-      pendingReports: Number(metrics.pendingReports || 0),
-      rejectedReports: Number(metrics.rejectedReports || 0),
-      activitiesTotal: Number(metrics.activitiesTotal || 0),
-      completedActivities: Number(metrics.completedActivities || 0),
-      pendingActivities: Number(metrics.pendingActivities || 0),
-      totalHours: Number(metrics.totalHours || 0),
-      activeAgents: Number(metrics.activeAgents || 0),
-      selectedAgents: selectedAgents.length,
-      completionRate: Math.round(completionRate * 10) / 10,
-      approvalRate: Math.round(approvalRate * 10) / 10,
-    };
-
+    const metrics = chefSynthesis.normalizeMetrics(metricRows[0] || {}, selectedAgents.length);
     const [categoryRows] = await db.query(
       `SELECT ra.category, COUNT(*) AS total
          FROM report_activities ra
@@ -2146,45 +2113,9 @@ exports.getChefServiceSynthesis = async (req, res, next) => {
         GROUP BY ra.category ORDER BY total DESC, ra.category ASC LIMIT 3`,
       [startDate, endDate, ...selectedIds]
     );
-    const formatter = new Intl.DateTimeFormat('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' });
-    const displayDate = value => formatter.format(new Date(`${value}T12:00:00`));
-    const scope = agentIds.length === 1
-      ? `l’agent ${selectedAgents[0].name || selectedAgents[0].username}`
-      : agentIds.length
-        ? `le groupe de ${selectedAgents.length} agents sélectionnés`
-        : `l’ensemble des agents actifs du département ${department}`;
-    const startLabel = displayDate(startDate);
-    const endLabel = displayDate(endDate);
-    const hoursLabel = `${normalizedMetrics.totalHours.toFixed(1)} heure${normalizedMetrics.totalHours === 1 ? '' : 's'}`;
-    const categoryDetails = categoryRows.map(row => `${row.category} (${Number(row.total)} activité${Number(row.total) === 1 ? '' : 's'})`);
-    let narrative;
-    if (!normalizedMetrics.reportCount && !normalizedMetrics.activitiesTotal) {
-      narrative = [
-        `Périmètre et période : du ${startLabel} au ${endLabel}, l’analyse porte sur ${scope}. Aucun rapport ni aucune activité n’a été enregistré dans ce périmètre pendant la période considérée.`,
-        `Lecture du bilan : en l’absence de données, il n’est pas possible de calculer un volume horaire, un taux d’achèvement ou un taux de traitement des rapports. Cette absence de résultats ne permet pas, à elle seule, de conclure à une absence de travail ; elle indique que le tableau ne dispose d’aucune saisie correspondant aux critères sélectionnés.`,
-        `Point de suivi : vérifiez que les agents concernés ont transmis leurs rapports et que les dates sélectionnées couvrent bien les journées à analyser. Élargissez la période ou le groupe d’agents si nécessaire, puis actualisez la synthèse.`
-      ].join('\n\n');
-    } else {
-      const pendingActivityRate = normalizedMetrics.activitiesTotal
-        ? Math.round((normalizedMetrics.pendingActivities / normalizedMetrics.activitiesTotal) * 1000) / 10
-        : 0;
-      const reportStatusSummary = normalizedMetrics.reportCount
-        ? `${normalizedMetrics.approvedReports} rapport${normalizedMetrics.approvedReports === 1 ? ' a été' : 's ont été'} approuvé${normalizedMetrics.approvedReports === 1 ? '' : 's'}, ${normalizedMetrics.pendingReports} ${normalizedMetrics.pendingReports === 1 ? 'reste' : 'restent'} en attente de traitement et ${normalizedMetrics.rejectedReports} ${normalizedMetrics.rejectedReports === 1 ? 'a été rejeté' : 'ont été rejetés'}. Le taux d’approbation s’établit à ${normalizedMetrics.approvalRate} % des rapports enregistrés sur la période.`
-        : `Aucun rapport n’a été soumis sur la période ; le taux d’approbation n’est donc pas calculable.`;
-      const categorySummary = categoryDetails.length
-        ? `Les catégories les plus représentées sont : ${categoryDetails.join(' ; ')}. Ce classement décrit la répartition des activités saisies et aide à repérer les principaux domaines d’intervention.`
-        : `Aucune catégorie n’est renseignée pour les activités recensées ; leur répartition thématique ne peut pas être établie à partir des données disponibles.`;
-      const followUp = normalizedMetrics.pendingActivities || normalizedMetrics.pendingReports
-        ? `Pour le suivi managérial, ${normalizedMetrics.pendingActivities} activité${normalizedMetrics.pendingActivities === 1 ? ' reste' : 's restent'} à achever et ${normalizedMetrics.pendingReports} rapport${normalizedMetrics.pendingReports === 1 ? ' demeure' : 's demeurent'} en attente de traitement. Ces éléments constituent les principaux points à examiner lors du prochain suivi, en tenant compte des échéances et des éventuelles observations consignées dans les rapports.`
-        : `À la date de cette consultation, aucune activité n’est signalée en attente et aucun rapport ne reste à traiter dans le périmètre retenu. Le bilan peut être utilisé comme état de situation pour la période, puis comparé aux périodes précédentes pour suivre l’évolution de la charge et de l’avancement.`;
-      narrative = [
-        `Périmètre et période : du ${startLabel} au ${endLabel}, cette synthèse porte sur ${scope}. Elle recense ${normalizedMetrics.reportCount} rapport${normalizedMetrics.reportCount === 1 ? '' : 's'} et ${normalizedMetrics.activitiesTotal} activité${normalizedMetrics.activitiesTotal === 1 ? '' : 's'}${normalizedMetrics.selectedAgents ? ` pour ${normalizedMetrics.selectedAgents} agent${normalizedMetrics.selectedAgents === 1 ? '' : 's'} dans le périmètre sélectionné` : ''}. Le temps déclaré représente un total de ${hoursLabel}. Ces indicateurs décrivent les saisies enregistrées dans l’application pour la période choisie.`,
-        `Avancement des activités : ${normalizedMetrics.completedActivities} activité${normalizedMetrics.completedActivities === 1 ? ' est' : 's sont'} terminée${normalizedMetrics.completedActivities === 1 ? '' : 's'}, soit ${normalizedMetrics.completionRate} % des activités. ${normalizedMetrics.pendingActivities} activité${normalizedMetrics.pendingActivities === 1 ? ' reste' : 's restent'} en attente, ce qui représente ${pendingActivityRate} %. Le taux d’achèvement rapporte les activités terminées au nombre total d’activités recensées ; il permet de lire l’état d’avancement sans confondre celui-ci avec l’approbation des rapports.`,
-        `Traitement des rapports : ${reportStatusSummary}`,
-        `Répartition des travaux : ${categorySummary}`,
-        `Points de suivi : ${followUp}`
-      ].join('\n\n');
-    }
+    const scope = chefSynthesis.synthesisScope(agentIds, selectedAgents, department);
+    const narrative = chefSynthesis.buildNarrative(metrics, categoryRows, scope, startDate, endDate);
+
     return res.json({
       success: true,
       department,
@@ -2192,7 +2123,7 @@ exports.getChefServiceSynthesis = async (req, res, next) => {
       startDate,
       endDate,
       scope,
-      metrics: normalizedMetrics,
+      metrics,
       categories: categoryRows.map(row => ({ name: row.category, total: Number(row.total) })),
       narrative,
     });
@@ -2201,7 +2132,6 @@ exports.getChefServiceSynthesis = async (req, res, next) => {
     next(error);
   }
 };
-
 // Liste paginée de toutes les activités report_activities du département.
 exports.getChefServiceActivities = async (req, res, next) => {
   try {
@@ -2353,11 +2283,7 @@ exports.decideChefServiceActivity = async (req, res, next) => {
         `SELECT dr.id,dr.user_id AS userId FROM daily_reports dr JOIN report_activities ra ON ra.daily_report_id=dr.id WHERE ra.id=? LIMIT 1`, [activityId]
       );
       if (reportRows.length) {
-        await db.query(
-          `INSERT INTO report_status_history (report_id, previous_status, new_status, comment, actor_id)
-           VALUES (?, 'submitted', ?, ?, ?)`,
-          [reportRows[0].id, decision === 'request_changes' ? 'changes_requested' : decision, reason || null, req.user.id]
-        );
+        await writeReportStatusHistory(db,{reportId:reportRows[0].id,previousStatus:'submitted',newStatus:decision==='request_changes'?'changes_requested':decision,comment:reason||null,actorId:req.user.id});
       }
       await notifications.notifyReportDecision(activityId, decision, reason);
       if(reportRows.length)webhookService.dispatchEvent(reportRows[0].userId,`report.${decision}`,{reportId:reportRows[0].id,activityId,comment:reason}).catch(()=>{});
@@ -2412,10 +2338,7 @@ exports.bulkApproveChefServiceReports = async (req, res, next) => {
         WHERE id IN (?) AND status='submitted'`, [req.user.id, reportIds]
     );
     for (const reportId of reportIds) {
-      await connection.query(
-        `INSERT INTO report_status_history (report_id, previous_status, new_status, actor_id)
-         VALUES (?, 'submitted', 'approved', ?)`, [reportId, req.user.id]
-      );
+      await writeReportStatusHistory(connection,{reportId,previousStatus:'submitted',newStatus:'approved',actorId:req.user.id});
     }
     await connection.commit();
     for (const userId of new Set(eligible.map(row => row.userId))) {

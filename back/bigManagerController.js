@@ -54,8 +54,8 @@ exports.getAgentDetails = async (req,res,next) => {
       u.job_title AS jobTitle,u.bio,u.avatar_url AS avatarUrl,u.is_active AS isActive,
       u.created_at AS createdAt,u.updated_at AS updatedAt
       FROM users u LEFT JOIN roles r ON r.id=u.role LEFT JOIN departments d ON d.id=u.department
-      WHERE u.id=? AND u.is_active=1 AND LOWER(TRIM(u.role))='agent' LIMIT 1`,[agentId]);
-    if(!profiles.length)return res.status(404).json({success:false,message:'Agent actif introuvable.'});
+      WHERE u.id=? AND u.is_active=1 AND LOWER(REPLACE(REPLACE(TRIM(u.role),' ','_'),'-','_')) IN ('agent','manager','chef_service','chef_de_service','chef') LIMIT 1`,[agentId]);
+    if(!profiles.length)return res.status(404).json({success:false,message:'Agent ou responsable actif introuvable.'});
     const profile=profiles[0];
     const [summaryRows]=await db.query(`SELECT COUNT(DISTINCT dr.id) AS reportCount,
       COUNT(ra.id) AS activityCount,

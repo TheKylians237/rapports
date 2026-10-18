@@ -45,7 +45,7 @@ function verifyAvatar(req, res, next) {
         return res.status(400).json({ success: false, message: 'Le fichier ne correspond pas à une image valide.' });
       }
       next();
-    } catch (validationError) {
+    } catch {
       if (fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
       return res.status(400).json({ success: false, message: 'Image invalide.' });
     }

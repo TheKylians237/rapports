@@ -12,7 +12,7 @@ const activityAudit = require('./activityAudit');
 const dailyReminderService = require('./dailyReminderService');
 const maintenanceService = require('./maintenanceService');
 const monthlySummaryService = require('./monthlySummaryService');
-const db = require('./db');
+const internetAccess = require('./internetAccess');
 
 const app = express();
 
@@ -35,10 +35,28 @@ app.use((req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
-  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  res.setHeader('Permissions-Policy', 'geolocation=(), camera=(), microphone=(), payment=(), usb=(), magnetometer=(), gyroscope=(), accelerometer=()');
   res.setHeader('X-Permitted-Cross-Domain-Policies', 'none');
   res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+  res.setHeader('X-XSS-Protection', '0');
+  res.setHeader('Content-Security-Policy', [
+    "default-src 'self'",
+    "base-uri 'self'",
+    "object-src 'none'",
+    "frame-ancestors 'none'",
+    "form-action 'self'",
+    "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' https://cdnjs.cloudflare.com",
+    "style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://fonts.googleapis.com",
+    "font-src 'self' data: https://cdnjs.cloudflare.com https://fonts.gstatic.com",
+    "img-src 'self' data: blob: https://api.dicebear.com",
+    "connect-src 'self'",
+    "worker-src 'self' blob:",
+    "manifest-src 'self'",
+  ].join('; '));
   if (req.path.startsWith('/api/')) res.setHeader('Cache-Control', 'no-store');
+  if (process.env.NODE_ENV === 'production' && req.protocol === 'https') {
+    res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains; preload');
+  }
   next();
 });
 app.use((req, res, next) => cors({ origin(origin, callback) {
@@ -49,29 +67,11 @@ app.use((req, res, next) => cors({ origin(origin, callback) {
     const originUrl = new URL(origin);
     const requestHost = String(req.headers.host || '').split(':')[0].toLowerCase();
     if (originUrl.protocol === 'http:' && requestHost && originUrl.hostname.toLowerCase() === requestHost) return callback(null, true);
-  } catch (_) {}
+  } catch {}
   return callback(Object.assign(new Error('Origine non autorisée'), { status: 403 }));
 } })(req, res, next));
 app.use(express.json({ limit: '100kb' }));
 app.use(express.urlencoded({ extended: false, limit: '100kb' }));
-
-// Headers de sécurité (manuels, sans dépendance supplémentaire)
-app.use((req, res, next) => {
-  res.setHeader('X-Content-Type-Options', 'nosniff');
-  res.setHeader('X-Frame-Options', 'DENY');
-  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
-  res.setHeader('X-XSS-Protection', '0');
-  res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
-  // Permissions-Policy minimal (limite certaines APIs)
-  res.setHeader(
-    'Permissions-Policy',
-    'geolocation=(), camera=(), microphone=(), payment=(), usb=(), magnetometer=(), gyroscope=(), accelerometer=()',
-  );
-  if (process.env.NODE_ENV === 'production' && req.protocol === 'https') {
-    res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains; preload');
-  }
-  next();
-});
 
 // Analyse minimale des cookies afin que l'authentification par cookie fonctionne
 // (en complément du jeton Bearer lu par authMiddleware).
@@ -85,12 +85,16 @@ app.use((req, _res, next) => {
       const key = part.slice(0, separator).trim();
       if (!key) continue;
       const rawValue = part.slice(separator + 1).trim();
-      try { jar[key] = decodeURIComponent(rawValue); } catch (_) { jar[key] = rawValue; }
+      try { jar[key] = decodeURIComponent(rawValue); } catch { jar[key] = rawValue; }
     }
   }
   req.cookies = jar;
   next();
 });
+
+// La liste blanche s’applique à toutes les pages, fichiers statiques et API.
+// Les IP privées du LAN restent accessibles pour l’usage interne.
+app.use(internetAccess.createMiddleware(app));
 
 app.use(activityAudit.middleware);
 

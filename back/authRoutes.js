@@ -1,12 +1,15 @@
 const express = require('express');
 const router = express.Router();
 const authController = require('./authController');
-const { verifyToken, protect, restrictTo, authenticateToken } = require('./authMiddleware');
+const { protect, restrictTo } = require('./authMiddleware');
 const { verifyAvatar } = require('./profileMiddleware');
 const dashesController = require('./dashesController');
 const adminController = require('./adminController');
 const rateLimit = require('./rateLimit');
 const bigManagerController = require('./bigManagerController');
+const bigManagerAnalyticsController = require('./bigManagerAnalytics');
+const chefInsightsController = require('./chefInsightsController');
+const agentDashboardController = require('./agentDashboardController');
 const notificationsController = require('./notificationsController');
 const activityAudit = require('./activityAudit');
 const advancedFeaturesController = require('./advancedFeaturesController');
@@ -17,6 +20,7 @@ const recoveryLimit = rateLimit({ max: 4, scope: 'password-recovery', keyBy: req
 const registrationLimit = rateLimit({ max: 25 });
 const publicConfigLimit = rateLimit({ max: 120 });
 const externalApiLimit = rateLimit({ max: 60, scope: 'external-api', keyBy: req => req.get('x-api-token') });
+const avatarUploadLimit = rateLimit({ windowMs: 60 * 60 * 1000, max: 10, scope: 'avatar-upload', keyBy: req => req.user?.id });
 
 // ============================================================================
 // 1. ROUTES PUBLIQUES (Non protégées)
@@ -52,6 +56,7 @@ router.post('/2fa/enable', protect, authController.verifyAndEnable2FA);
 router.get('/reports', protect, restrictTo('agent'), dashesController.getDashboardData);
 router.get('/reports/latest-activities', protect, restrictTo('agent'), dashesController.getLatestReportActivities);
 router.get('/agent/reminder-status', protect, restrictTo('agent'), dashesController.getAgentReminderStatus);
+router.get('/agent/dashboard-insights', protect, restrictTo('agent'), agentDashboardController.getAgentDashboardInsights);
 router.post('/reports-store', protect, restrictTo('agent'), dashesController.storeReport);
 router.get('/agent/reports/:reportId/correction', protect, restrictTo('agent'), dashesController.getReportForCorrection);
 router.put('/agent/reports/:reportId/correction', protect, restrictTo('agent'), dashesController.resubmitCorrectedReport);
@@ -86,11 +91,11 @@ router.post('/push/subscribe', protect, advancedFeaturesController.savePushSubsc
 router.post('/push/unsubscribe', protect, advancedFeaturesController.deletePushSubscription);
 router.get('/push/config', protect, advancedFeaturesController.getPushConfig);
 router.get('/big-manager/analytics', protect, restrictTo('big_manager'), advancedFeaturesController.getDepartmentAnalytics);
-router.get('/delegations', protect, advancedFeaturesController.getDelegations);
-router.post('/delegations', protect, restrictTo('admin','big_manager','chef_service'), advancedFeaturesController.createDelegation);
-router.delete('/delegations/:id', protect, restrictTo('admin','big_manager','chef_service'), advancedFeaturesController.revokeDelegation);
-router.post('/big-manager/objectives', protect, restrictTo('admin','big_manager','chef_service'), advancedFeaturesController.setObjective);
-router.get('/big-manager/objectives', protect, restrictTo('admin','big_manager','chef_service'), advancedFeaturesController.listDepartmentObjectives);
+router.get('/chef-service/delegations', protect, restrictTo('admin','chef_service'), advancedFeaturesController.getDelegations);
+router.post('/chef-service/delegations', protect, restrictTo('admin','chef_service'), advancedFeaturesController.createDelegation);
+router.delete('/chef-service/delegations/:id', protect, restrictTo('admin','chef_service'), advancedFeaturesController.revokeDelegation);
+router.post('/chef-service/objectives', protect, restrictTo('admin','chef_service'), advancedFeaturesController.setObjective);
+router.get('/chef-service/objectives', protect, restrictTo('admin','chef_service'), advancedFeaturesController.listDepartmentObjectives);
 router.get('/admin/module-permissions', protect, adminController.requireActiveAdmin, advancedFeaturesController.getModulePermissions);
 router.put('/admin/module-permissions', protect, adminController.requireActiveAdmin, advancedFeaturesController.setModulePermission);
 router.get('/external/reports', externalApiLimit, advancedFeaturesController.externalReports);
@@ -100,7 +105,7 @@ router.post('/admin/monthly-summary/run', protect, adminController.requireActive
 });
 
 // Gestion des Avatars
-router.post('/charge-avatar', protect, verifyAvatar, dashesController.chargeAvatar);
+router.post('/charge-avatar', protect, avatarUploadLimit, verifyAvatar, dashesController.chargeAvatar);
 router.get('/get-avatar', protect, dashesController.loadAvatar);
 
 // Données Visualisation / Métriques Agent & Utilisateur
@@ -121,6 +126,8 @@ router.get('/detailed-history', protect, dashesController.get_detailed_history);
 router.get('/admin/overview', protect, adminController.requireActiveAdmin, adminController.getOverview);
 router.get('/admin/registration', protect, adminController.requireActiveAdmin, adminController.getRegistrationSetting);
 router.put('/admin/registration', protect, adminController.requireActiveAdmin, adminController.setRegistrationSetting);
+router.get('/admin/internet-access', protect, adminController.requireActiveAdmin, adminController.getInternetAccessSetting);
+router.put('/admin/internet-access', protect, adminController.requireActiveAdmin, adminController.setInternetAccessSetting);
 router.get('/admin/users', protect, adminController.requireActiveAdmin, adminController.listUsers);
 router.post('/admin/users', protect, adminController.requireActiveAdmin, adminController.createUser);
 router.put('/admin/users/:userId', protect, adminController.requireActiveAdmin, adminController.updateUser);
@@ -148,6 +155,7 @@ router.get(
   dashesController.getChefServiceDashboard
 );
 router.get('/chef-dashboard/synthesis', protect, restrictTo('chef_service'), dashesController.getChefServiceSynthesis);
+router.get('/chef-dashboard/insights', protect, restrictTo('chef_service'), chefInsightsController.getInsights);
 router.get(
   '/chef-dashboard/agents/:agentId',
   protect,
@@ -160,6 +168,8 @@ router.get('/chef-dashboard/proposals', protect, restrictTo('chef_service'), das
 router.patch('/chef-dashboard/proposals/:issueId/assignment', protect, restrictTo('chef_service'), dashesController.assignChefServiceIssue);
 router.patch('/chef-dashboard/proposals/:issueId/decision', protect, restrictTo('chef_service'), dashesController.decideChefServiceReportIssue);
 router.post('/chef-dashboard/agents/:agentId/evaluations', protect, restrictTo('chef_service'), dashesController.saveChefServiceAgentEvaluation);
+router.post('/chef-dashboard/agents/:agentId/remind', protect, restrictTo('chef_service'), chefInsightsController.remindAgent);
+router.post('/chef-dashboard/agents/:agentId/congratulate', protect, restrictTo('chef_service'), chefInsightsController.congratulateAgent);
 router.get('/chef-dashboard/activities', protect, restrictTo('chef_service'), dashesController.getChefServiceActivities);
 router.post('/chef-dashboard/activities/bulk-approve', protect, restrictTo('chef_service'), dashesController.bulkApproveChefServiceReports);
 router.get('/agent/department-chefs', protect, restrictTo('agent'), dashesController.getAgentDepartmentChefs);
@@ -169,6 +179,7 @@ router.patch('/chef-dashboard/activities/:activityId/status', protect, restrictT
 router.patch('/chef-dashboard/activities/:activityId/decision', protect, restrictTo('chef_service'), dashesController.decideChefServiceActivity);
 
 router.get('/big-manager/overview', protect, restrictTo('big_manager'), bigManagerController.getOverview);
+router.get('/big-manager/analytics/complete', protect, restrictTo('big_manager'), bigManagerAnalyticsController.getDepartmentAnalytics);
 router.get('/big-manager/agents/:agentId', protect, restrictTo('big_manager'), bigManagerController.getAgentDetails);
 router.post('/big-manager/ratings', protect, restrictTo('big_manager'), bigManagerController.rateManager);
 router.post('/big-manager/reviews', protect, restrictTo('big_manager'), bigManagerController.addReview);

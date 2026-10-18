@@ -2,6 +2,8 @@ const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const db = require('./db');
 const appSettings = require('./appSettings');
+const internetAccess = require('./internetAccess');
+const { validateAllowlist, normalizeIp, isLocalOrPrivateIp } = require('./ipAddress');
 const { sendAccountCredentials } = require('./mailer');
 const activityAudit = require('./activityAudit');
 const { isValidEmail, isValidPassword, PASSWORD_MIN_LENGTH } = require('./validators');
@@ -184,7 +186,7 @@ exports.createUser = async (req, res, next) => {
     catch (mailError) { emailSent = false; console.error('Envoi des identifiants impossible:', mailError.message); }
     return res.status(201).json({ success:true, id, emailSent, message:emailSent ? 'Compte créé et identifiants envoyés par e-mail.' : 'Compte créé, mais l’e-mail n’a pas pu être envoyé. Vérifiez la configuration SMTP.' });
   } catch (error) {
-    try { await connection.rollback(); } catch (_) {}
+    try { await connection.rollback(); } catch {}
     if (error.code === 'ER_DUP_ENTRY') return res.status(409).json({ success:false,message:'Ce nom utilisateur ou cet e-mail est déjà utilisé.' });
     next(error);
   } finally { connection.release(); }
@@ -203,6 +205,34 @@ exports.setRegistrationSetting = async (req,res,next) => {
     await audit(req, enabled ? 'REGISTRATION_ENABLED' : 'REGISTRATION_DISABLED', null, {});
     return res.json({success:true,enabled});
   } catch(error){next(error);}
+};
+
+exports.getInternetAccessSetting = async (req, res, next) => {
+  try {
+    const config = await internetAccess.getConfig({ refresh: true });
+    return res.json({ success: true, enabled: config.enabled, allowedIps: config.allowedIps });
+  } catch (error) { next(error); }
+};
+
+exports.setInternetAccessSetting = async (req, res, next) => {
+  try {
+    const enabled = req.body?.enabled;
+    if (typeof enabled !== 'boolean') return res.status(400).json({ success: false, message: 'Le champ enabled doit être booléen.' });
+    if (enabled && req.app.get('trust proxy') === true) {
+      return res.status(400).json({ success: false, message: 'Configurez TRUST_PROXY avec les adresses exactes de votre proxy, jamais avec « true », puis réessayez.' });
+    }
+    const allowedIps = validateAllowlist(req.body?.allowedIps, { enabled });
+    const currentIp = normalizeIp(req.ip || req.socket?.remoteAddress || '');
+    if (enabled && currentIp && !isLocalOrPrivateIp(currentIp) && !allowedIps.includes(currentIp)) {
+      return res.status(409).json({ success: false, message: 'Ajoutez votre adresse IP actuelle à la liste pour éviter de perdre l’accès administrateur.' });
+    }
+    const config = await internetAccess.saveConfig({ enabled, allowedIps, userId: req.user.id });
+    await audit(req, enabled ? 'INTERNET_IP_ALLOWLIST_ENABLED' : 'INTERNET_IP_ALLOWLIST_DISABLED', null, { allowedIps });
+    return res.json({ success: true, enabled: config.enabled, allowedIps: config.allowedIps });
+  } catch (error) {
+    if (error instanceof TypeError) return res.status(400).json({ success: false, message: error.message });
+    return next(error);
+  }
 };
 
 exports.updateUser = async (req, res, next) => {
@@ -256,6 +286,7 @@ exports.setUserStatus = async (req, res, next) => {
     const [targets] = await db.query('SELECT id FROM users WHERE id=? LIMIT 1',[id]);
     if (!targets.length) return res.status(404).json({ success:false,message:'Utilisateur introuvable.' });
     await db.query('UPDATE users SET is_active=? WHERE id=?', [active ? 1 : 0,id]);
+    if (!active) await db.query('UPDATE user_sessions SET revoked_at=NOW() WHERE user_id=? AND revoked_at IS NULL', [id]);
     await audit(req,active ? 'USER_ACTIVATED' : 'USER_DEACTIVATED',id);
     return res.json({ success:true,isActive:active });
   } catch(error) { next(error); }
@@ -271,6 +302,7 @@ exports.resetUserPassword = async(req,res,next)=>{
     if(!target.length)return res.status(404).json({success:false,message:'Utilisateur introuvable.'});
     const hash=await bcrypt.hash(password,10);
     await db.query('UPDATE users SET password_hash=?,two_factor_code=NULL,two_factor_expires=NULL WHERE id=?',[hash,id]);
+    await db.query('UPDATE user_sessions SET revoked_at=NOW() WHERE user_id=? AND revoked_at IS NULL',[id]);
     await audit(req,'USER_PASSWORD_RESET',id);
     return res.json({success:true,message:'Mot de passe temporaire enregistré. Communiquez-le à l’utilisateur par un canal sûr.'});
   }catch(error){next(error);}
@@ -326,7 +358,7 @@ exports.updateDepartment = async (req,res,next) => {
     await audit(req,name!==oldName?'DEPARTMENT_RENAMED':active===false?'DEPARTMENT_DEACTIVATED':'DEPARTMENT_UPDATED',id,{oldName,name});
     return res.json({success:true,name,isActive:active!==false});
   } catch(error) {
-    try{await connection.rollback();}catch(_){}
+    try{await connection.rollback();}catch{}
     if(error.code==='ER_DUP_ENTRY') return res.status(409).json({success:false,message:'Un département porte déjà ce nom.'});
     next(error);
   } finally {connection.release();}
@@ -355,7 +387,7 @@ exports.deleteDepartment = async(req,res,next)=>{
     await audit(req,'DEPARTMENT_DELETED',id,{name:source.name,reassignedUsers:memberCount,targetDepartment:target?.name||null});
     return res.json({success:true,deletedDepartment:source.name,reassignedUsers:memberCount,targetDepartment:target?.name||null});
   }catch(error){
-    try{await connection.rollback();}catch(_){}
+    try{await connection.rollback();}catch{}
     next(error);
   }finally{connection.release();}
 };
@@ -564,7 +596,7 @@ exports.getArchiveDetails = async(req,res,next)=>{
     await ensureAdminSchema();
     const [rows]=await db.query('SELECT id,entity_type AS entityType,source_id AS sourceId,payload,archived_at AS archivedAt FROM data_archives WHERE id=? LIMIT 1',[req.params.archiveId]);
     if(!rows.length)return res.status(404).json({success:false,message:'Archive introuvable.'});
-    let payload;try{payload=JSON.parse(rows[0].payload);}catch(_){payload=rows[0].payload;}
+    let payload;try{payload=JSON.parse(rows[0].payload);}catch{payload=rows[0].payload;}
     return res.json({success:true,archive:{...rows[0],payload,label:archiveTypes[rows[0].entityType]||rows[0].entityType}});
   }catch(error){next(error);}
 };

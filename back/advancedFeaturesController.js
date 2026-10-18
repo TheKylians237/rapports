@@ -5,6 +5,7 @@ const notifications = require('./notificationsController');
 
 const iso = value => { const match=String(value||'').match(/^(\d{4})-(\d{2})-(\d{2})$/);if(!match)return false;const date=new Date(Date.UTC(Number(match[1]),Number(match[2])-1,Number(match[3])));return date.getUTCFullYear()===Number(match[1])&&date.getUTCMonth()===Number(match[2])-1&&date.getUTCDate()===Number(match[3]); };
 const normalizeRole = value => String(value || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+const isScalarUserId = value => (typeof value === 'string' && value.length > 0 && value.length <= 64 && value.trim() === value) || (Number.isSafeInteger(value) && value > 0);
 
 exports.getDepartmentAnalytics = async (req,res,next) => {
   try {
@@ -52,11 +53,14 @@ exports.setObjective = async(req,res,next)=>{
     const {userId,title,metric,targetValue,periodStart,periodEnd}=req.body||{};
     const parsedTarget=Number(targetValue);
     if(!userId||typeof title!=='string'||title.trim().length<3||title.length>160||!['reports','activities','hours','on_time_rate'].includes(metric)||!Number.isFinite(parsedTarget)||parsedTarget<=0||parsedTarget>1000000||!iso(periodStart)||!iso(periodEnd)||periodStart>periodEnd)return res.status(400).json({success:false,message:'Objectif invalide.'});
-    const [targets]=await db.query('SELECT id,department FROM users WHERE id=? AND is_active=1 LIMIT 1',[userId]);
+    const actorRole=normalizeRole(req.user.role),isAdmin=actorRole==='admin';
+    if(!isAdmin&&!['chef_service','chef_de_service','chef','manager'].includes(actorRole))return res.status(403).json({success:false,message:'Accès réservé au chef de service.'});
+    const [targets]=await db.query("SELECT id,department,role FROM users WHERE id=? AND is_active=1 LIMIT 1",[userId]);
     if(!targets.length)return res.status(404).json({success:false,message:'Utilisateur actif introuvable.'});
-    if(!['admin','big_manager'].includes(normalizeRole(req.user.role))){
+    if(!['agent','manager'].includes(normalizeRole(targets[0].role)))return res.status(400).json({success:false,message:'Les objectifs individuels concernent les agents et managers actifs.'});
+    if(!isAdmin){
       const [actor]=await db.query('SELECT department FROM users WHERE id=?',[req.user.id]);
-      if(actor[0]?.department!==targets[0].department)return res.status(403).json({success:false,message:'Cet utilisateur ne relève pas de votre service.'});
+      if(!actor[0]?.department||String(actor[0].department)!==String(targets[0].department))return res.status(403).json({success:false,message:'Cet utilisateur ne relève pas de votre service.'});
     }
     const id=crypto.randomUUID();
     await db.query('INSERT INTO user_objectives(id,user_id,created_by,title,metric,target_value,period_start,period_end) VALUES(?,?,?,?,?,?,?,?)',[id,userId,req.user.id,title.trim(),metric,parsedTarget,periodStart,periodEnd]);
@@ -67,9 +71,11 @@ exports.setObjective = async(req,res,next)=>{
 exports.listDepartmentObjectives = async(req,res,next)=>{
   try {
     const actorRole=normalizeRole(req.user.role),userId=String(req.query.userId||'').trim();
+    const isAdmin=actorRole==='admin';
+    if(!isAdmin&&!['chef_service','chef_de_service','chef','manager'].includes(actorRole))return res.status(403).json({success:false,message:'Accès réservé au chef de service.'});
     let scopeSql='',params=[];
     if(userId){scopeSql=' AND u.id=?';params.push(userId);}
-    if(!['admin','big_manager'].includes(actorRole)){
+    if(!isAdmin){
       const [actor]=await db.query('SELECT department FROM users WHERE id=?',[req.user.id]);
       if(!actor[0]?.department)return res.status(403).json({success:false,message:'Service introuvable.'});
       scopeSql+=' AND u.department=?';params.push(actor[0].department);
@@ -87,33 +93,52 @@ exports.listDepartmentObjectives = async(req,res,next)=>{
 
 exports.getDelegations = async(req,res,next)=>{
   try {
-    const admin=['admin','big_manager'].includes(normalizeRole(req.user.role));
+    const role=normalizeRole(req.user.role),admin=role==='admin';
+    if(!admin&&!['chef_service','chef_de_service','chef','manager'].includes(role))return res.status(403).json({success:false,message:'Accès réservé au chef de service.'});
+    let scope='';const params=[];
+    if(!admin){
+      const [actor]=await db.query('SELECT department FROM users WHERE id=?',[req.user.id]);
+      if(!actor[0]?.department)return res.status(403).json({success:false,message:'Service introuvable.'});
+      scope=' AND p.department=? AND x.department=?';params.push(actor[0].department,actor[0].department);
+    }
     const [rows]=await db.query(`SELECT d.id,d.principal_user_id AS principalUserId,p.last_name AS principalName,p.role AS principalRole,
       d.delegate_user_id AS delegateUserId,x.last_name AS delegateName,x.role AS delegateRole,d.starts_at AS startsAt,d.ends_at AS endsAt,d.reason,d.revoked_at AS revokedAt
       FROM user_delegations d JOIN users p ON p.id=d.principal_user_id JOIN users x ON x.id=d.delegate_user_id
-      WHERE (?=1 OR d.principal_user_id=? OR d.delegate_user_id=?) ORDER BY d.starts_at DESC LIMIT 500`,[admin?1:0,req.user.id,req.user.id]);
+      WHERE 1=1${scope} ORDER BY d.starts_at DESC LIMIT 500`,params);
     return res.json({success:true,delegations:rows});
   } catch(error){next(error);}
 };
 
 exports.createDelegation = async(req,res,next)=>{
   try {
-    const {principalUserId,delegateUserId,startsAt,endsAt,reason}=req.body||{};
+    const {delegateUserId,startsAt,endsAt,reason}=req.body||{};
+    const actorRole=normalizeRole(req.user.role),isAdmin=actorRole==='admin';
+    if(!isAdmin&&!['chef_service','chef_de_service','chef','manager'].includes(actorRole))return res.status(403).json({success:false,message:'Accès réservé au chef de service.'});
+    const principalUserId=isAdmin?req.body?.principalUserId:req.user.id;
     const start=new Date(startsAt),end=new Date(endsAt);
-    if(!principalUserId||!delegateUserId||principalUserId===delegateUserId||Number.isNaN(+start)||Number.isNaN(+end)||end<=start||end-start>90*86400000)return res.status(400).json({success:false,message:'Période de délégation invalide (maximum 90 jours).'});
-    const [users]=await db.query('SELECT id,role,department FROM users WHERE id IN (?,?) AND is_active=1',[principalUserId,delegateUserId]);
-    const principal=users.find(user=>user.id===principalUserId),delegate=users.find(user=>user.id===delegateUserId);
-    if(!principal||!delegate||!['chef_service','chef_de_service','chef','manager'].includes(normalizeRole(principal.role)))return res.status(400).json({success:false,message:'Le titulaire doit être un responsable actif.'});
-    if(principal.department!==delegate.department)return res.status(400).json({success:false,message:'Le remplaçant doit appartenir au même service.'});
-    const actorRole=normalizeRole(req.user.role);
-    if(!['admin','big_manager'].includes(actorRole)){
-      const [actor]=await db.query('SELECT department FROM users WHERE id=?',[req.user.id]);
-      if(principal.id!==req.user.id||actor[0]?.department!==delegate.department||delegate.department!==principal.department)return res.status(403).json({success:false,message:'Vous pouvez déléguer uniquement votre propre responsabilité à un collègue du même service.'});
-    }
-    const id=crypto.randomUUID();
-    const [overlaps]=await db.query('SELECT id FROM user_delegations WHERE delegate_user_id=? AND revoked_at IS NULL AND starts_at<? AND ends_at>? LIMIT 1',[delegateUserId,end,start]);
-    if(overlaps.length)return res.status(409).json({success:false,message:'Ce remplaçant a déjà une délégation active sur cette période.'});
-    await db.query('INSERT INTO user_delegations(id,principal_user_id,delegate_user_id,starts_at,ends_at,reason,created_by) VALUES(?,?,?,?,?,?,?)',[id,principalUserId,delegateUserId,start,end,String(reason||'').slice(0,500)||null,req.user.id]);
+    if(!isScalarUserId(principalUserId)||!isScalarUserId(delegateUserId)||String(principalUserId)===String(delegateUserId)||Number.isNaN(+start)||Number.isNaN(+end)||end<=start||end-start>90*86400000)return res.status(400).json({success:false,message:'Période ou compte de délégation invalide (maximum 90 jours).'});
+    const id=crypto.randomUUID(),connection=await db.getConnection();
+    try {
+      await connection.beginTransaction();
+      const [users]=await connection.query('SELECT id,role,department FROM users WHERE id IN (?,?) AND is_active=1 ORDER BY id FOR UPDATE',[principalUserId,delegateUserId]);
+      const principal=users.find(user=>String(user.id)===String(principalUserId)),delegate=users.find(user=>String(user.id)===String(delegateUserId));
+      if(!principal||!delegate||!['chef_service','chef_de_service','chef','manager'].includes(normalizeRole(principal.role))){
+        await connection.rollback();
+        return res.status(400).json({success:false,message:'Le titulaire et le remplaçant doivent être des comptes actifs et le titulaire doit être un responsable.'});
+      }
+      if(!principal.department||String(principal.department)!==String(delegate.department)){
+        await connection.rollback();
+        return res.status(400).json({success:false,message:'Le remplaçant doit appartenir au même service.'});
+      }
+      if(!isAdmin&&String(principal.id)!==String(req.user.id)){
+        await connection.rollback();
+        return res.status(403).json({success:false,message:'Vous pouvez déléguer uniquement votre propre responsabilité.'});
+      }
+      const [overlaps]=await connection.query('SELECT id FROM user_delegations WHERE delegate_user_id=? AND revoked_at IS NULL AND starts_at<? AND ends_at>? LIMIT 1 FOR UPDATE',[delegateUserId,end,start]);
+      if(overlaps.length){await connection.rollback();return res.status(409).json({success:false,message:'Ce remplaçant a déjà une délégation active sur cette période.'});}
+      await connection.query('INSERT INTO user_delegations(id,principal_user_id,delegate_user_id,starts_at,ends_at,reason,created_by) VALUES(?,?,?,?,?,?,?)',[id,principalUserId,delegateUserId,start,end,String(reason||'').slice(0,500)||null,req.user.id]);
+      await connection.commit();
+    } catch(error) {try{await connection.rollback();}catch{}throw error;} finally {connection.release();}
     await Promise.all([principalUserId,delegateUserId].map(userId=>notifications.createNotification(userId,{title:'Délégation temporaire enregistrée',body:`Délégation du ${start.toLocaleString('fr-FR')} au ${end.toLocaleString('fr-FR')}.`,type:'delegation',link:'/html/chef_service_dashboard.html'})));
     return res.status(201).json({success:true,id});
   } catch(error){next(error);}
@@ -121,7 +146,9 @@ exports.createDelegation = async(req,res,next)=>{
 
 exports.revokeDelegation = async(req,res,next)=>{
   try {
-    const [result]=await db.query('UPDATE user_delegations SET revoked_at=NOW() WHERE id=? AND revoked_at IS NULL AND (principal_user_id=? OR ?=1)',[req.params.id,req.user.id,['admin','big_manager'].includes(normalizeRole(req.user.role))?1:0]);
+    const role=normalizeRole(req.user.role),admin=role==='admin',principalId=req.user.id;
+    if(!admin&&!['chef_service','chef_de_service','chef','manager'].includes(role))return res.status(403).json({success:false,message:'Accès réservé au chef de service.'});
+    const [result]=await db.query('UPDATE user_delegations SET revoked_at=NOW() WHERE id=? AND revoked_at IS NULL AND (principal_user_id=? OR ?=1)',[req.params.id,principalId,admin?1:0]);
     if(!result.affectedRows)return res.status(404).json({success:false,message:'Délégation introuvable ou déjà révoquée.'});
     return res.json({success:true});
   } catch(error){next(error);}
