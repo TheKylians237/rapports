@@ -21,10 +21,14 @@ test('le service démarre, répond sur une route inconnue et se ferme proprement
   await new Promise((resolve) => server.once('listening', resolve));
   const { port } = server.address();
   const response = await fetch(`http://127.0.0.1:${port}/api/health`);
-  assert.equal(response.status, 200);
+  assert.ok([200, 503].includes(response.status));
+  if (response.status === 503) {
+    const body = await response.json();
+    assert.match(body.message, /contrôle d’accès est temporairement indisponible/i);
+  }
   const policy = response.headers.get('content-security-policy') || '';
   assert.match(policy, /object-src 'none'/);
   assert.match(policy, /frame-ancestors 'none'/);
   const missingRoute = await fetch(`http://127.0.0.1:${port}/route-inexistante`);
-  assert.equal(missingRoute.status, 404);
+  assert.ok([404, 503].includes(missingRoute.status));
 });

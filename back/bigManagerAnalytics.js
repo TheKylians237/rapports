@@ -50,6 +50,42 @@ function reportScope(filters, alias = 'u', reportAlias = 'dr') {
 
 function toNumber(value) { return Number(value || 0); }
 
+function percent(value, total) {
+  return total ? Math.round(1000 * value / total) / 10 : null;
+}
+
+function buildComparison({ startDate, span, current, previous }) {
+  const start = new Date(`${startDate}T12:00:00`);
+  const end = new Date(`${startDate}T12:00:00`);
+  start.setDate(start.getDate() - span);
+  end.setDate(end.getDate() - 1);
+  const asIso = date => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+  const currentReports = toNumber(current.reportCount);
+  const previousReports = toNumber(previous.reportCount);
+  const currentCompleteness = percent(toNumber(current.completeReports), currentReports);
+  const previousCompleteness = percent(toNumber(previous.completeReports), previousReports);
+  const currentApproval = percent(toNumber(current.approved), currentReports);
+  const previousApproval = percent(toNumber(previous.approved), previousReports);
+  const currentLate = percent(toNumber(current.late), currentReports);
+  const previousLate = percent(toNumber(previous.late), previousReports);
+  return {
+    priorStart: asIso(start),
+    priorEnd: asIso(end),
+    baselineAvailable: previousReports > 0,
+    reportChange: previousReports ? Math.round(100 * (currentReports - previousReports) / previousReports) : null,
+    previousReports,
+    previousApproved: toNumber(previous.approved),
+    previousRejected: toNumber(previous.rejected),
+    previousLate: toNumber(previous.late),
+    previousCompletenessRate: previousCompleteness,
+    previousApprovalRate: previousApproval,
+    previousLateRate: previousLate,
+    completenessRateChange: currentCompleteness === null || previousCompleteness === null ? null : Math.round(10 * (currentCompleteness - previousCompleteness)) / 10,
+    approvalRateChange: currentApproval === null || previousApproval === null ? null : Math.round(10 * (currentApproval - previousApproval)) / 10,
+    lateRateChange: currentLate === null || previousLate === null ? null : Math.round(10 * (currentLate - previousLate)) / 10,
+  };
+}
+
 exports.getDepartmentAnalytics = async (req, res, next) => {
   try {
     const window = dateWindow(req.query);
@@ -159,8 +195,8 @@ exports.getDepartmentAnalytics = async (req, res, next) => {
         const priorStart = new Date(`${filters.startDate}T12:00:00`); priorStart.setDate(priorStart.getDate()-filters.span);
         const priorEnd = new Date(`${filters.startDate}T12:00:00`); priorEnd.setDate(priorEnd.getDate()-1);
         const asIso = date => `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`;
-        return db.query(`SELECT COUNT(DISTINCT dr.id) AS reportCount,COUNT(DISTINCT CASE WHEN ${STATUS_SQL} IN ('approved','validated','accepted') THEN dr.id END) AS approved,COUNT(DISTINCT CASE WHEN ${STATUS_SQL} IN ('rejected','refused') THEN dr.id END) AS rejected,COUNT(DISTINCT CASE WHEN DATE(dr.created_at)>dr.report_date OR (DATE(dr.created_at)=dr.report_date AND TIME(dr.created_at)>?) THEN dr.id END) AS late
-          FROM daily_reports dr JOIN users u ON CONVERT(u.id USING utf8mb4) COLLATE utf8mb4_general_ci=CONVERT(dr.user_id USING utf8mb4) COLLATE utf8mb4_general_ci WHERE dr.report_date BETWEEN ? AND ? AND ${roleFilter}${reportJoinScope.sql}`,[deadline,asIso(priorStart),asIso(priorEnd),...reportJoinScope.params]);
+        return db.query(`SELECT COUNT(DISTINCT dr.id) AS reportCount,COUNT(DISTINCT CASE WHEN ${STATUS_SQL} IN ('approved','validated','accepted') THEN dr.id END) AS approved,COUNT(DISTINCT CASE WHEN ${STATUS_SQL} IN ('rejected','refused') THEN dr.id END) AS rejected,COUNT(DISTINCT CASE WHEN DATE(dr.created_at)>dr.report_date OR (DATE(dr.created_at)=dr.report_date AND TIME(dr.created_at)>?) THEN dr.id END) AS late,COUNT(DISTINCT CASE WHEN COALESCE(ra.activityCount,0)>0 THEN dr.id END) AS completeReports,COUNT(DISTINCT CASE WHEN dr.total_hours<=0 OR dr.total_hours>24 THEN dr.id END) AS incoherentReports
+          FROM daily_reports dr JOIN users u ON CONVERT(u.id USING utf8mb4) COLLATE utf8mb4_general_ci=CONVERT(dr.user_id USING utf8mb4) COLLATE utf8mb4_general_ci LEFT JOIN (SELECT daily_report_id,COUNT(*) AS activityCount FROM report_activities WHERE LOWER(TRIM(status)) <> 'superseded' GROUP BY daily_report_id) ra ON ra.daily_report_id=dr.id WHERE dr.report_date BETWEEN ? AND ? AND ${roleFilter}${reportJoinScope.sql}`,[deadline,asIso(priorStart),asIso(priorEnd),...reportJoinScope.params]);
       })(),
     ]);
 
@@ -185,11 +221,10 @@ exports.getDepartmentAnalytics = async (req, res, next) => {
     const normalizedLeaders = leaders.map(row => ({ ...row, backlog:toNumber(row.backlog),processed24h:toNumber(row.processed24h),processed7d:toNumber(row.processed7d),processed30d:toNumber(row.processed30d),averageDecisionMinutes:toNumber(row.averageDecisionMinutes) }));
     const normalizedTrend = trend.map(row => ({ ...row, reports:toNumber(row.reports),pending:toNumber(row.pending),approved:toNumber(row.approved),rejected:toNumber(row.rejected),late:toNumber(row.late),averageDecisionMinutes:toNumber(row.averageDecisionMinutes) }));
     const totals = { reportCount,pending,approved,rejected,changesRequested:toNumber(summary.changesRequested),late,lateRate:reportCount?Math.round(1000*late/reportCount)/10:0,submissionRate:activeAgents?Math.round(1000*Math.min(toNumber(summary.agentReportCount),activeAgents*window.span)/(activeAgents*window.span))/10:0,approvalRate:reportCount?Math.round(1000*approved/reportCount)/10:0,rejectionRate:reportCount?Math.round(1000*rejected/reportCount)/10:0,completenessRate:reportCount?Math.round(1000*toNumber(summary.completeReports)/reportCount)/10:0,completeReports:toNumber(summary.completeReports),reportsWithoutActivity:toNumber(summary.reportsWithoutActivity),incoherentReports:toNumber(summary.incoherentReports),totalHours:toNumber(summary.totalHours),averageDecisionMinutes:toNumber(summary.averageDecisionMinutes),decidedReports:toNumber(summary.decidedReports),headcount:totalUsers,activeAgents,agentReportCount:toNumber(summary.agentReportCount) };
-    const priorReportCount=toNumber(previous.reportCount);
-    const comparison={priorStart: (()=>{const d=new Date(`${filters.startDate}T12:00:00`);d.setDate(d.getDate()-window.span);return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;})(),priorEnd:(()=>{const d=new Date(`${filters.startDate}T12:00:00`);d.setDate(d.getDate()-1);return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;})(),reportChange:priorReportCount?Math.round(100*(reportCount-priorReportCount)/priorReportCount):null,previousReports:priorReportCount,previousApproved:toNumber(previous.approved),previousRejected:toNumber(previous.rejected),previousLate:toNumber(previous.late)};
+    const comparison = buildComparison({ startDate: filters.startDate, span: window.span, current: totals, previous });
     const filteredQueue = queue.map(row => ({...row,isLate:Boolean(Number(row.isLate)),urgent:Boolean(Number(row.urgent)),activityCount:toNumber(row.activityCount),activityHours:toNumber(row.activityHours),totalHours:toNumber(row.totalHours)}));
     return res.json({success:true,startDate:filters.startDate,endDate:filters.endDate,days:window.span,deadline:deadline.slice(0,5),filters:{departmentId:filters.departmentId,managerId:filters.managerId,agentId:filters.agentId,lateOnly:filters.lateOnly},summary:totals,departments,people,leaders:normalizedLeaders,trend:normalizedTrend,status,narrative,comparison,approvalQueue:filteredQueue});
   } catch (error) { return next(error); }
 };
 
-exports._test = { dateWindow, expectedDeadline, isoDate };
+exports._test = { dateWindow, expectedDeadline, isoDate, buildComparison };

@@ -11,6 +11,22 @@ test('les filtres Big Manager exigent des dates réelles et une fenêtre bornée
   assert.ok(bigManager.dateWindow({startDate:'2025-01-01',endDate:'2026-10-16'}).error);
 });
 
+test('les indicateurs comparatifs exposent les taux qualité et leur évolution', () => {
+  const comparison = bigManager.buildComparison({
+    startDate: '2026-10-17',
+    span: 7,
+    current: { reportCount: 10, approved: 8, late: 2, completeReports: 9 },
+    previous: { reportCount: 8, approved: 4, rejected: 2, late: 4, completeReports: 4 },
+  });
+  assert.equal(comparison.priorStart, '2026-10-10');
+  assert.equal(comparison.priorEnd, '2026-10-16');
+  assert.equal(comparison.baselineAvailable, true);
+  assert.equal(comparison.previousCompletenessRate, 50);
+  assert.equal(comparison.completenessRateChange, 40);
+  assert.equal(comparison.approvalRateChange, 30);
+  assert.equal(comparison.lateRateChange, -30);
+});
+
 test('la ponctualité des rappels est réglable et retombe à 17 h', () => {
   const previous=process.env.DAILY_REPORT_DEADLINE_HOUR;
   process.env.DAILY_REPORT_DEADLINE_HOUR='19';

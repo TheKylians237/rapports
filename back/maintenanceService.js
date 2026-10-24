@@ -13,6 +13,13 @@ async function purgeExpiredSecrets() {
   await db.query('DELETE FROM password_resets WHERE expires_at <= NOW()');
   await db.query('UPDATE users SET two_factor_code=NULL, two_factor_expires=NULL WHERE two_factor_expires <= NOW()');
   await db.query('DELETE FROM user_sessions WHERE expires_at < DATE_SUB(NOW(), INTERVAL 30 DAY) OR revoked_at < DATE_SUB(NOW(), INTERVAL 30 DAY)');
+  // Le magasin partagé n'est présent qu'après la migration dédiée. Le test
+  // d'existence permet de conserver une maintenance compatible avec une base
+  // en cours de mise à niveau.
+  const [[rateLimitTable]] = await db.query(
+    "SELECT COUNT(*) AS found FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='rate_limit_buckets'",
+  );
+  if (Number(rateLimitTable.found)) await db.query('DELETE FROM rate_limit_buckets WHERE expires_at < NOW()');
 }
 
 async function purgeOldAuditLogs() {

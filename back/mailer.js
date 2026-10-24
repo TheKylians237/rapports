@@ -12,17 +12,17 @@ const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&':
 async function sendAccountCredentials(toEmail, username, password) {
   if (!process.env.MAIL_USER || !(process.env.MAIL_PASSWORD || process.env.MAIL_PASS)) throw new Error('Configuration e-mail absente.');
   return transporter.sendMail({
-    from: `"Gestion des Rapports" <${process.env.MAIL_USER}>`, to: toEmail,
-    subject: 'Votre compte Gestion des Rapports',
+    from: `"Rob-ReportsManager" <${process.env.MAIL_USER}>`, to: toEmail,
+    subject: 'Votre compte Rob-ReportsManager',
     text: `Votre compte est prêt. Identifiant : ${username}\nMot de passe initial : ${password}\nPour votre sécurité, remplacez ce mot de passe depuis votre profil après la première connexion.`,
-    html: `<p>Votre compte Gestion des Rapports est prêt.</p><p>Identifiant : <strong>${escapeHtml(username)}</strong><br>Mot de passe initial : <strong>${escapeHtml(password)}</strong></p><p>Pour votre sécurité, remplacez ce mot de passe depuis votre profil après la première connexion.</p>`
+    html: `<p>Votre compte Rob-ReportsManager est prêt.</p><p>Identifiant : <strong>${escapeHtml(username)}</strong><br>Mot de passe initial : <strong>${escapeHtml(password)}</strong></p><p>Pour votre sécurité, remplacez ce mot de passe depuis votre profil après la première connexion.</p>`
   });
 }
 
 // Fonction exportée pour envoyer le code 2FA
 const send2FACode = async (toEmail, code) => {
     const mailOptions = {
-        from: `"Service Sécurité" <${process.env.MAIL_USER}>`,
+        from: `"Rob-ReportsManager · Sécurité" <${process.env.MAIL_USER}>`,
         to: toEmail,
         subject: 'Votre code de vérification 2FA',
         html: `
@@ -42,7 +42,7 @@ const send2FACode = async (toEmail, code) => {
 // 2. Déclaration explicite de la fonction sendResetOTP
 const sendResetOTP = async (toEmail, otpCode) => {
   const mailOptions = {
-    from: `"Rapports d'Activités" <${process.env.MAIL_USER}>`,
+    from: `"Rob-ReportsManager" <${process.env.MAIL_USER}>`,
     to: toEmail,
     subject: 'Code de réinitialisation de mot de passe',
     html: `

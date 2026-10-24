@@ -14,13 +14,22 @@ const notificationsController = require('./notificationsController');
 const activityAudit = require('./activityAudit');
 const advancedFeaturesController = require('./advancedFeaturesController');
 const monthlySummaryService = require('./monthlySummaryService');
-const loginLimit = rateLimit({ max: 8, scope: 'login', keyBy: req => req.body?.identity });
-const otpLimit = rateLimit({ max: 8, scope: 'otp', keyBy: req => req.body?.preAuthToken || req.body?.userId || req.body?.email });
-const recoveryLimit = rateLimit({ max: 4, scope: 'password-recovery', keyBy: req => req.body?.email || req.body?.userId });
-const registrationLimit = rateLimit({ max: 25 });
-const publicConfigLimit = rateLimit({ max: 120 });
-const externalApiLimit = rateLimit({ max: 60, scope: 'external-api', keyBy: req => req.get('x-api-token') });
-const avatarUploadLimit = rateLimit({ windowMs: 60 * 60 * 1000, max: 10, scope: 'avatar-upload', keyBy: req => req.user?.id });
+const db = require('./db');
+
+// En production (ou avec RATE_LIMIT_STORE=database), les compteurs sont
+// centralisés dans MySQL afin de rester cohérents entre plusieurs processus.
+// Le mode mémoire reste explicite pour les tests et le développement local.
+const sharedRateLimitStore = process.env.RATE_LIMIT_STORE === 'database' || process.env.NODE_ENV === 'production'
+  ? rateLimit.createMysqlRateLimitStore(db)
+  : undefined;
+const configuredRateLimit = options => rateLimit({ ...options, store: sharedRateLimitStore });
+const loginLimit = configuredRateLimit({ max: 8, scope: 'login', keyBy: req => req.body?.identity });
+const otpLimit = configuredRateLimit({ max: 8, scope: 'otp', keyBy: req => req.body?.preAuthToken || req.body?.userId || req.body?.email });
+const recoveryLimit = configuredRateLimit({ max: 4, scope: 'password-recovery', keyBy: req => req.body?.email || req.body?.userId });
+const registrationLimit = configuredRateLimit({ max: 25 });
+const publicConfigLimit = configuredRateLimit({ max: 120 });
+const externalApiLimit = configuredRateLimit({ max: 60, scope: 'external-api', keyBy: req => req.get('x-api-token') });
+const avatarUploadLimit = configuredRateLimit({ windowMs: 60 * 60 * 1000, max: 10, scope: 'avatar-upload', keyBy: req => req.user?.id });
 
 // ============================================================================
 // 1. ROUTES PUBLIQUES (Non protégées)
@@ -126,7 +135,10 @@ router.get('/detailed-history', protect, dashesController.get_detailed_history);
 router.get('/admin/overview', protect, adminController.requireActiveAdmin, adminController.getOverview);
 router.get('/admin/registration', protect, adminController.requireActiveAdmin, adminController.getRegistrationSetting);
 router.put('/admin/registration', protect, adminController.requireActiveAdmin, adminController.setRegistrationSetting);
+router.get('/admin/registration/roles', protect, adminController.requireActiveAdmin, adminController.getRegistrationRoleSettings);
+router.put('/admin/registration/roles', protect, adminController.requireActiveAdmin, adminController.setRegistrationRoleSettings);
 router.get('/admin/internet-access', protect, adminController.requireActiveAdmin, adminController.getInternetAccessSetting);
+router.get('/admin/internet-access/current-device', protect, adminController.requireActiveAdmin, adminController.getInternetAccessCurrentDevice);
 router.put('/admin/internet-access', protect, adminController.requireActiveAdmin, adminController.setInternetAccessSetting);
 router.get('/admin/users', protect, adminController.requireActiveAdmin, adminController.listUsers);
 router.post('/admin/users', protect, adminController.requireActiveAdmin, adminController.createUser);
@@ -144,6 +156,8 @@ router.get('/admin/sessions', protect, adminController.requireActiveAdmin, admin
 router.patch('/admin/sessions/:sessionId/revoke', protect, adminController.requireActiveAdmin, adminController.revokeSession);
 router.get('/admin/retention', protect, adminController.requireActiveAdmin, adminController.getRetentionSettings);
 router.put('/admin/retention', protect, adminController.requireActiveAdmin, adminController.saveRetentionSettings);
+router.get('/admin/operational-objectives', protect, adminController.requireActiveAdmin, adminController.getOperationalObjectives);
+router.put('/admin/operational-objectives', protect, adminController.requireActiveAdmin, adminController.saveOperationalObjectives);
 router.post('/admin/archives/run', protect, adminController.requireActiveAdmin, adminController.runArchive);
 router.get('/admin/archives', protect, adminController.requireActiveAdmin, adminController.listArchives);
 router.get('/admin/archives/:archiveId', protect, adminController.requireActiveAdmin, adminController.getArchiveDetails);

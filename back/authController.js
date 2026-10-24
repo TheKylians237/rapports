@@ -58,10 +58,15 @@ const isStrongPassword = (password) => {
 
 exports.register = async (req, res) => {
   try {
-    if (!(await appSettings.getRegistrationOpen())) return res.status(403).json({ success: false, message: 'La création de comptes est temporairement désactivée par l’administrateur.' });
     const { fullName, email, username, phone, department, role, password } = req.body;
     const departmentId = String(department || '').trim();
     const roleId = String(role || 'agent').trim().toLowerCase().replace(/[\s-]+/g, '_');
+
+    const registrationState = await appSettings.getRegistrationState();
+    if (!registrationState.enabled) return res.status(403).json({ success: false, code: 'REGISTRATION_CLOSED', message: 'Les inscriptions sont bloquées. Veuillez contacter l’administrateur.' });
+    if (['agent', 'manager', 'chef_service'].includes(roleId) && registrationState.roles[roleId] !== true) {
+      return res.status(403).json({ success: false, code: 'REGISTRATION_ROLE_CLOSED', role: roleId, message: 'L’inscription pour ce rôle est bloquée. Veuillez contacter l’administrateur.' });
+    }
 
     // 1. Contrôle des champs obligatoires
     if (!fullName || !email || !username || !password || !departmentId || !['agent','manager','chef_service'].includes(roleId) ||
@@ -95,6 +100,12 @@ exports.register = async (req, res) => {
     // 3. Hachage du mot de passe
     const salt = await bcrypt.genSalt(10);
     const passwordHash = await bcrypt.hash(password, salt);
+    // Recontrôle juste avant l’insertion afin qu’une fermeture faite pendant la saisie prenne effet.
+    const latestRegistrationState = await appSettings.getRegistrationState();
+    if (!latestRegistrationState.enabled) return res.status(403).json({ success: false, code: 'REGISTRATION_CLOSED', message: 'Les inscriptions sont bloquées. Veuillez contacter l’administrateur.' });
+    if (latestRegistrationState.roles[roleId] !== true) {
+      return res.status(403).json({ success: false, code: 'REGISTRATION_ROLE_CLOSED', role: roleId, message: 'L’inscription pour ce rôle est bloquée. Veuillez contacter l’administrateur.' });
+    }
 
     // 4. Préparation des variables
     const userId = crypto.randomUUID();
@@ -120,6 +131,8 @@ exports.register = async (req, res) => {
 
     return res.status(201).json({
       success: true,
+      pendingActivation: true,
+      isActive: false,
       message: 'Compte créé. Il sera accessible après activation par un administrateur.'
     });
 
@@ -137,9 +150,10 @@ exports.register = async (req, res) => {
 
 exports.registrationOptions = async (_req,res) => {
   try {
+    const registration = await appSettings.getRegistrationState();
     const [departments] = await pool.query('SELECT id,name FROM departments WHERE is_active=1 ORDER BY name');
     const [roles] = await pool.query("SELECT id,name FROM roles WHERE is_active=1 AND id IN ('agent','manager','chef_service') ORDER BY CASE id WHEN 'agent' THEN 1 ELSE 2 END");
-    return res.json({success:true,departments,roles});
+    return res.json({success:true,departments,roles:roles.map(role=>({...role,registrationOpen:registration.enabled&&registration.roles[role.id]===true}))});
   } catch(error) {
     console.error('Chargement des options d’inscription impossible:',error.message);
     return res.status(503).json({success:false,message:'Les options d’inscription sont temporairement indisponibles.'});
@@ -147,7 +161,7 @@ exports.registrationOptions = async (_req,res) => {
 };
 
 exports.registrationStatus = async (_req,res) => {
-  try { return res.json({success:true,enabled:await appSettings.getRegistrationOpen()}); }
+  try { const state=await appSettings.getRegistrationState(); return res.json({success:true,enabled:state.enabled,roles:state.roles}); }
   catch(error) { console.error('Lecture du réglage inscription impossible:',error.message); return res.status(503).json({success:false,message:'État des inscriptions temporairement indisponible.'}); }
 };
 

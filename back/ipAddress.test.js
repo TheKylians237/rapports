@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { normalizeIp, isLocalOrPrivateIp, isPublicIp, validateAllowlist } = require('./ipAddress');
+const { normalizeIp, normalizeMac, isLocalOrPrivateIp, isPublicIp, validateAllowlist, validateAccessAddresses } = require('./ipAddress');
 
 test('normalizes IPv4-mapped IPv6 addresses', () => {
   assert.equal(normalizeIp('::ffff:8.8.8.8'), '8.8.8.8');
@@ -38,4 +38,20 @@ test('rejects duplicate, private, malformed, or same-network addresses', () => {
 test('allows clearing the list only while the restriction is disabled', () => {
   assert.deepEqual(validateAllowlist(['', ''], { enabled: false }), []);
   assert.throws(() => validateAllowlist([], { enabled: true }), TypeError);
+});
+
+test('normalizes valid MAC addresses and rejects group/broadcast addresses', () => {
+  assert.equal(normalizeMac('AA-BB-CC-DD-EE-FF'), 'aa:bb:cc:dd:ee:ff');
+  assert.equal(normalizeMac('01:00:5e:00:00:01'), null);
+  assert.equal(normalizeMac('ff:ff:ff:ff:ff:ff'), null);
+});
+
+test('validates a mixed allowlist of private/public IPs and MAC addresses', () => {
+  assert.deepEqual(validateAccessAddresses(['192.168.1.20', '8.8.8.8', 'AA-BB-CC-DD-EE-FF']), [
+    '192.168.1.20', '8.8.8.8', 'aa:bb:cc:dd:ee:ff'
+  ]);
+  assert.throws(() => validateAccessAddresses(['192.168.1.20', '192.168.1.20']), TypeError);
+  assert.throws(() => validateAccessAddresses(['bad address']), TypeError);
+  assert.throws(() => validateAccessAddresses([], { enabled: true }), TypeError);
+  assert.deepEqual(validateAccessAddresses([], { enabled: false }), []);
 });

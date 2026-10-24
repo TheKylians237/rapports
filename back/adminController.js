@@ -3,10 +3,11 @@ const bcrypt = require('bcryptjs');
 const db = require('./db');
 const appSettings = require('./appSettings');
 const internetAccess = require('./internetAccess');
-const { validateAllowlist, normalizeIp, isLocalOrPrivateIp } = require('./ipAddress');
+const { validateAccessAddresses, normalizeIp, normalizeMac } = require('./ipAddress');
 const { sendAccountCredentials } = require('./mailer');
 const activityAudit = require('./activityAudit');
 const { isValidEmail, isValidPassword, PASSWORD_MIN_LENGTH } = require('./validators');
+const { createAdminOperationalController } = require('./adminOperationalController');
 
 let schemaReady;
 async function ensureAdminSchema() {
@@ -151,7 +152,7 @@ exports.listUsers = async (req, res, next) => {
     if (req.query.status === 'inactive') where.push('u.is_active=0');
     const [rows] = await db.query(`SELECT u.id, u.last_name AS fullName, u.username, u.email,
       u.phone, u.role, u.department, u.job_title AS jobTitle, u.is_active AS isActive,
-      u.created_at AS createdAt FROM users u ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+      u.created_at AS createdAt, 'hashed' AS passwordStatus FROM users u ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
       ORDER BY u.last_name,u.username LIMIT 500`, params);
     return res.json({ success: true, users: rows });
   } catch (error) { next(error); }
@@ -207,10 +208,43 @@ exports.setRegistrationSetting = async (req,res,next) => {
   } catch(error){next(error);}
 };
 
+exports.getRegistrationRoleSettings = async (_req,res,next) => {
+  try {
+    const state = await appSettings.getRegistrationState();
+    return res.json({ success:true, roles:state.roles, registrationEnabled:state.enabled });
+  } catch(error) { return next(error); }
+};
+
+exports.setRegistrationRoleSettings = async (req,res,next) => {
+  try {
+    const configured = req.body?.roles;
+    const allowedRoles = ['agent','manager','chef_service'];
+    if (!configured || typeof configured !== 'object' || Array.isArray(configured) ||
+        Object.keys(configured).some(role => !allowedRoles.includes(role)) ||
+        allowedRoles.some(role => typeof configured[role] !== 'boolean')) {
+      return res.status(400).json({success:false,message:'Définissez explicitement l’ouverture des inscriptions pour chaque rôle public.'});
+    }
+    await appSettings.ensureSettings();
+    await db.query("UPDATE app_settings SET setting_value=?,updated_by=? WHERE setting_key='registration_roles'",[JSON.stringify(configured),req.user.id]);
+    await audit(req,'REGISTRATION_ROLE_SETTINGS_UPDATED',null,{roles:configured});
+    return res.json({success:true,roles:configured});
+  } catch(error) { return next(error); }
+};
+
 exports.getInternetAccessSetting = async (req, res, next) => {
   try {
     const config = await internetAccess.getConfig({ refresh: true });
-    return res.json({ success: true, enabled: config.enabled, allowedIps: config.allowedIps });
+    return res.json({ success: true, enabled: config.enabled, allowedAddresses: config.allowedAddresses, allowedIps: config.allowedIps, allowedMacs: config.allowedMacs });
+  } catch (error) { next(error); }
+};
+
+exports.getInternetAccessCurrentDevice = async (req, res, next) => {
+  try {
+    const ipAddress = normalizeIp(req.ip || '') || normalizeIp(req.socket?.remoteAddress || '');
+    const macAddresses = ipAddress && (ipAddress === '127.0.0.1' || ipAddress === '::1')
+      ? internetAccess.getLocalMacAddresses()
+      : (ipAddress ? [await internetAccess.resolveClientMac(ipAddress).catch(() => null)] : []).filter(Boolean);
+    return res.json({ success: true, ipAddress, macAddress: macAddresses[0] || null, macAddresses });
   } catch (error) { next(error); }
 };
 
@@ -221,14 +255,19 @@ exports.setInternetAccessSetting = async (req, res, next) => {
     if (enabled && req.app.get('trust proxy') === true) {
       return res.status(400).json({ success: false, message: 'Configurez TRUST_PROXY avec les adresses exactes de votre proxy, jamais avec « true », puis réessayez.' });
     }
-    const allowedIps = validateAllowlist(req.body?.allowedIps, { enabled });
-    const currentIp = normalizeIp(req.ip || req.socket?.remoteAddress || '');
-    if (enabled && currentIp && !isLocalOrPrivateIp(currentIp) && !allowedIps.includes(currentIp)) {
-      return res.status(409).json({ success: false, message: 'Ajoutez votre adresse IP actuelle à la liste pour éviter de perdre l’accès administrateur.' });
+    const allowedAddresses = validateAccessAddresses(req.body?.allowedAddresses ?? req.body?.allowedIps, { enabled });
+    const currentIp = normalizeIp(req.ip || '') || normalizeIp(req.socket?.remoteAddress || '');
+    const currentMacs = enabled && currentIp && (currentIp === '127.0.0.1' || currentIp === '::1')
+      ? internetAccess.getLocalMacAddresses()
+      : (enabled && currentIp ? [await internetAccess.resolveClientMac(currentIp).catch(() => null)] : []).filter(Boolean);
+    const normalizedCurrentMacs = currentMacs.map(normalizeMac).filter(Boolean);
+    const currentDeviceAllowed = allowedAddresses.includes(currentIp) || normalizedCurrentMacs.some(mac => allowedAddresses.includes(mac));
+    if (enabled && currentIp && !currentDeviceAllowed) {
+      return res.status(409).json({ success: false, message: 'Ajoutez votre adresse IP ou MAC actuelle à la liste pour éviter de perdre l’accès administrateur.' });
     }
-    const config = await internetAccess.saveConfig({ enabled, allowedIps, userId: req.user.id });
-    await audit(req, enabled ? 'INTERNET_IP_ALLOWLIST_ENABLED' : 'INTERNET_IP_ALLOWLIST_DISABLED', null, { allowedIps });
-    return res.json({ success: true, enabled: config.enabled, allowedIps: config.allowedIps });
+    const config = await internetAccess.saveConfig({ enabled, allowedAddresses, userId: req.user.id });
+    await audit(req, enabled ? 'NETWORK_ACCESS_ALLOWLIST_ENABLED' : 'NETWORK_ACCESS_ALLOWLIST_DISABLED', null, { allowedAddresses });
+    return res.json({ success: true, enabled: config.enabled, allowedAddresses: config.allowedAddresses, allowedIps: config.allowedIps, allowedMacs: config.allowedMacs });
   } catch (error) {
     if (error instanceof TypeError) return res.status(400).json({ success: false, message: error.message });
     return next(error);
@@ -505,6 +544,10 @@ exports.saveRetentionSettings = async(req,res,next)=>{
     return exports.getRetentionSettings(req,res,next);
   }catch(error){next(error);}
 };
+
+const operationalController = createAdminOperationalController({ audit });
+exports.getOperationalObjectives = operationalController.getOperationalObjectives;
+exports.saveOperationalObjectives = operationalController.saveOperationalObjectives;
 
 function isoBeforeDays(days){const date=new Date();date.setHours(0,0,0,0);date.setDate(date.getDate()-days);return `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`;}
 

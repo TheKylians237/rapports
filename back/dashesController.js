@@ -8,6 +8,24 @@ const notifications = require('./notificationsController');
 const webhookService = require('./webhookService');
 const chefSynthesis = require('./chefSynthesis');
 
+const ACTIVITY_DESCRIPTION_MAX_LENGTH = 180;
+const ACTIVITY_SERVICE_MAX_LENGTH = 50;
+function normalizeActivityDescription(descriptionValue, serviceValue) {
+  let description = String(descriptionValue || '').trim();
+  let service = String(serviceValue || '').trim();
+  const existingService = description.match(/\s+effectué au service\s*:\s*(.+)$/i);
+  if (existingService) {
+    if (!service) service = existingService[1].trim();
+    description = description.slice(0, existingService.index).trim();
+  }
+  if (!description || !service || description.length > ACTIVITY_DESCRIPTION_MAX_LENGTH || service.length > ACTIVITY_SERVICE_MAX_LENGTH) {
+    return { description, service, valid: false };
+  }
+  const formatted = `${description} effectué au service : ${service}`;
+  if (formatted.length > 255) return { description, service, valid: false };
+  return { description: formatted, service, valid: true };
+}
+
 let reportStatusHistoryAvailable;
 async function writeReportStatusHistory(connection, { reportId, previousStatus = null, newStatus, comment = null, actorId = null }) {
   if (reportStatusHistoryAvailable === undefined) {
@@ -32,7 +50,8 @@ exports.getDashboardData = async (req, res) => {
   try {
     // 1. Extraction des paramètres (sans la période)
     const user_id = req.user?.id;
-    const { search = '', status = '' } = req.query;
+    const search = String(req.query.search || '').trim().slice(0, 100);
+    const { status = '' } = req.query;
 
     // 2. Requête Statistiques (KPIs) globales
     let statsSql = `
@@ -73,6 +92,9 @@ exports.getDashboardData = async (req, res) => {
         r.review_comment,
         r.next_day_targets,
         r.general_comments,
+        (SELECT GROUP_CONCAT(ra.description ORDER BY ra.id SEPARATOR ' · ')
+           FROM report_activities ra
+          WHERE ra.daily_report_id = r.id AND LOWER(TRIM(ra.status)) <> 'superseded') AS activity_descriptions,
         r.created_at,
         u.last_name,
         u.username,
@@ -95,10 +117,14 @@ exports.getDashboardData = async (req, res) => {
         reportsParams.push(status);
     }
 
-    if (search && search.trim() !== '') {
-      reportsSql += ` AND (u.last_name LIKE ? OR u.username LIKE ? OR r.general_comments LIKE ? OR r.next_day_targets LIKE ?)`;
-      const searchPattern = `%${search.trim()}%`;
-      reportsParams.push(searchPattern, searchPattern, searchPattern, searchPattern);
+    if (search) {
+      reportsSql += ` AND (u.last_name LIKE ? OR u.username LIKE ? OR r.general_comments LIKE ? OR r.next_day_targets LIKE ?
+        OR EXISTS (SELECT 1 FROM report_activities searched_activity
+                    WHERE searched_activity.daily_report_id = r.id
+                      AND LOWER(TRIM(searched_activity.status)) <> 'superseded'
+                      AND searched_activity.description LIKE ?))`;
+      const searchPattern = `%${search}%`;
+      reportsParams.push(searchPattern, searchPattern, searchPattern, searchPattern, searchPattern);
     }
 
     reportsSql += ` ORDER BY r.report_date DESC, r.created_at DESC LIMIT 50`;
@@ -134,6 +160,7 @@ exports.getLatestReportActivities = async (req, res) => {
            WHERE previous.user_id = ? AND previous.report_date < CURDATE()
            ORDER BY previous.report_date DESC, previous.created_at DESC LIMIT 1
         )
+          AND LOWER(TRIM(ra.status)) <> 'superseded'
         ORDER BY ra.id ASC
         LIMIT 20`,
       [req.user.id],
@@ -242,14 +269,14 @@ exports.resubmitCorrectedReport = async (req, res) => {
   try {
     const reportId = String(req.params.reportId || '').trim();
     const activities = Array.isArray(req.body?.activities) ? req.body.activities.slice(0, 50).map(activity => ({
-      description: String(activity.description || '').trim().slice(0, 255),
+      ...normalizeActivityDescription(activity.description, activity.service),
       objectives: String(activity.objectives || '').trim().slice(0, 5000),
       observations: String(activity.observations || activity.obsevations || '').trim().slice(0, 5000),
       category: String(activity.category || 'Autre').trim().slice(0, 100),
       hours: Number(activity.hours),
     })) : [];
-    if (!activities.length || activities.some(activity => !activity.description || !Number.isFinite(activity.hours) || activity.hours <= 0 || activity.hours > 24)) {
-      return res.status(400).json({ success: false, message: 'Vérifiez les descriptions et les durées des activités.' });
+    if (!activities.length || activities.some(activity => !activity.valid || !Number.isFinite(activity.hours) || activity.hours < 0.5 || activity.hours > 24)) {
+      return res.status(400).json({ success: false, message: 'Vérifiez la description (180 caractères maximum), le service (50 caractères maximum) et la durée de chaque activité.' });
     }
     await connection.beginTransaction();
     const [reports] = await connection.query(
@@ -328,14 +355,14 @@ exports.storeReport = async (req, res) => {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(reportDate)) return res.status(400).json({ success: false, message: 'Date de rapport invalide.' });
     if (!Array.isArray(activities) || activities.length === 0) return res.status(400).json({ success: false, message: 'Ajoutez au moins une activité au rapport.' });
     const normalizedActivities = activities.map((activity) => ({
-      description: String(activity.description || '').trim().slice(0, 255),
+      ...normalizeActivityDescription(activity.description, activity.service),
       objectives: String(activity.objectives || '').trim(),
       observations: String(activity.observations || activity.obsevations || '').trim(),
       category: String(activity.category || 'Autre').trim().slice(0, 100),
       hours: Number(activity.hours),
     }));
-    if (normalizedActivities.some(a => !a.description || !Number.isFinite(a.hours) || a.hours <= 0)) {
-      return res.status(400).json({ success: false, message: 'Chaque activité doit avoir une description et une durée positive.' });
+    if (normalizedActivities.some(a => !a.valid || !Number.isFinite(a.hours) || a.hours < 0.5 || a.hours > 24)) {
+      return res.status(400).json({ success: false, message: 'Chaque activité doit avoir une description (180 caractères maximum), un service (50 caractères maximum) et une durée valide.' });
     }
     const totalHours = normalizedActivities.reduce((sum, a) => sum + a.hours, 0);
     const reportId = await createCanonicalDailyReport({ userId, submittedTo: recipientId, reportDate, totalHours, comments, nextDayTargets, activities: normalizedActivities, clientSubmissionId });
@@ -958,17 +985,18 @@ exports.saveTask = async (req, res) => {
     if (!userId) return res.status(401).json({ success: false, message: 'Session utilisateur invalide.' });
     if (!Array.isArray(activities) || !activities.length) return res.status(400).json({ success: false, message: 'Au moins une activité est requise pour soumettre un rapport.' });
     const normalizedActivities = activities.map(activity => ({
-      description: String(activity.description || '').trim().slice(0, 255),
+      ...normalizeActivityDescription(activity.description, activity.service),
       objectives: String(activity.objectives || '').trim(),
       observations: String(activity.observations || activity.obsevations || '').trim(),
       category: String(activity.category || 'Autre').trim().slice(0, 100),
       hours: Number(activity.hours),
     }));
-    if (normalizedActivities.some(a => !a.description || !Number.isFinite(a.hours) || a.hours <= 0)) {
-      return res.status(400).json({ success: false, message: 'Chaque activité doit avoir une description et une durée positive.' });
+    if (normalizedActivities.some(a => !a.valid || !Number.isFinite(a.hours) || a.hours < 0.5 || a.hours > 24)) {
+      return res.status(400).json({ success: false, message: 'Chaque activité doit avoir une description (180 caractères maximum), un service (50 caractères maximum) et une durée valide.' });
     }
     const reportDate = date || new Date().toISOString().slice(0, 10);
     const totalHours = normalizedActivities.reduce((sum, activity) => sum + activity.hours, 0);
+    if (totalHours > 24) return res.status(400).json({ success: false, message: 'Le total des activités ne peut pas dépasser 24 heures.' });
     const reportId = await createCanonicalDailyReport({ userId, reportDate, totalHours, comments, activities: normalizedActivities });
     return res.status(201).json({
       success: true,

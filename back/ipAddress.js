@@ -45,6 +45,26 @@ function isPublicIp(value) {
   return address.kind() === 'ipv6' ? isPublicIpv6(address) : isPublicIpv4(address);
 }
 
+function normalizeMac(value) {
+  if (typeof value !== 'string') return null;
+  const compact = value.trim().replace(/[:-]/g, '').toLowerCase();
+  if (!/^[0-9a-f]{12}$/.test(compact)) return null;
+  const firstOctet = Number.parseInt(compact.slice(0, 2), 16);
+  if ((firstOctet & 1) === 1 || /^0{12}$/.test(compact) || /^f{12}$/.test(compact)) return null;
+  return compact.match(/.{2}/g).join(':');
+}
+
+function validateAccessAddresses(values, { enabled = true } = {}) {
+  if (!Array.isArray(values)) throw new TypeError('Saisissez les adresses IP ou MAC autorisées sous forme de liste.');
+  const entries = values.map(value => String(value ?? '').trim()).filter(Boolean);
+  if (entries.length > 50) throw new TypeError('La liste est limitée à 50 adresses.');
+  if (enabled && entries.length === 0) throw new TypeError('Ajoutez au moins une adresse IP ou MAC avant d’activer la restriction.');
+  const normalized = entries.map(value => normalizeIp(value) || normalizeMac(value));
+  if (normalized.some(value => !value)) throw new TypeError('Une adresse est invalide. Saisissez une IP sans port/masque ou une adresse MAC au format AA:BB:CC:DD:EE:FF.');
+  if (new Set(normalized).size !== normalized.length) throw new TypeError('Chaque adresse IP ou MAC doit être unique.');
+  return normalized;
+}
+
 function networkKey(address) {
   if (address.kind() === 'ipv4') return `ipv4:${address.octets.slice(0, 3).join('.')}/24`;
   return `ipv6:${address.parts.slice(0, 4).map(part => part.toString(16).padStart(4, '0')).join(':')}/64`;
@@ -68,4 +88,4 @@ function validateAllowlist(values, { enabled = true } = {}) {
   return normalized;
 }
 
-module.exports = { parseIp, normalizeIp, isLocalOrPrivateIp, isPublicIp, validateAllowlist };
+module.exports = { parseIp, normalizeIp, normalizeMac, isLocalOrPrivateIp, isPublicIp, validateAllowlist, validateAccessAddresses };
